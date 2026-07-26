@@ -13,7 +13,7 @@ async fn main() -> Result<()> {
     enricher::enrich(&mut entries).await;
 
     eprintln!("Enrichment complete. Launching TUI...");
-    tui::run(entries)?;
+    tui::run(entries).await?;
 
     Ok(())
 }

@@ -19,17 +19,15 @@
 
 ## 安裝
 
-### 透過 Homebrew（即將推出）
+### 透過 Homebrew
 
-```bash
-brew install sysapp-tui
-```
+尚未發布（追蹤於 SCO-236）。目前請由原始碼建置。
 
 ### 從原始碼編譯
 
 ```bash
 # 複製倉庫
-git clone https://github.com/yourname/sysapp-tui.git
+git clone https://github.com/ShiGaChenTW/sysapp-tui.git
 cd sysapp-tui
 
 # 編譯（需 Rust 工具鏈）
@@ -60,17 +58,23 @@ sysapp-tui
 
 | 按鍵 | 功能 |
 |------|------|
-| `↑` / `↓` | 上下移動選取列 |
-| `1` - `6` | 切換排序欄位（名稱/來源/語言/版本/安裝日期/使用次數/路徑） |
+| `j` / `k` / `↑` / `↓` | 上下移動選取 |
+| `d` / `u` / `PgDn` / `PgUp` | 翻頁 |
+| `g` / `G` / `Home` / `End` | 跳到第一筆／最後一筆 |
+| `1` – `7` | 依欄位排序（名稱／來源／語言／版本／安裝日期／使用次數／路徑），再按一次反向 |
 | `/` | 進入搜尋模式 |
-| `Esc` | 取消搜尋 / 返回列表 |
-| `Enter` | 確認搜尋（搜尋模式）/ 無動作（一般模式） |
-| `i` | 檢視選取項目的詳細資訊 |
-| `q` | 離開程式 |
+| `Esc` | 取消搜尋／關閉浮層 |
+| `Enter` / `i` | 檢視選取項目的詳細資訊 |
+| `?` | 開關按鍵說明浮層 |
+| `q` / `Ctrl-C` | 離開 |
+
+使用次數與安裝日期兩欄第一次選取時預設由大到小排序——數量與日期真正有意義的
+那一端是大的那頭。`▲`／`▼` 指示永遠反映實際排序方向。
+
 
 ### 搜尋模式
 
-按下 `/` 進入搜尋模式後，直接輸入關鍵字即可即時過濾。比對對象為套件名稱（不分大小寫）。再次按 `/` 或 `Esc` 可取消搜尋。
+按下 `/` 進入搜尋模式後，直接輸入關鍵字即可即時過濾。比對對象包含套件名稱、來源、偵測到的語言與安裝路徑（皆不分大小寫）。`Enter` 保留過濾條件並回到瀏覽，`Esc` 清除過濾並還原完整清單。
 
 ### 詳細資訊
 
@@ -126,8 +130,8 @@ sysapp-tui
 ```
 sysapp-tui/
 ├── src/
-│   ├── main.rs          # 進入點：掃描 → 豐富化 → TUI
-│   ├── model.rs         # 資料模型（AppEntry、Source、Language）
+│   ├── main.rs          # 進入點：掃描 → 補強 → TUI
+│   ├── model.rs         # 資料模型（AppEntry, Source, Language）
 │   ├── scanner/
 │   │   ├── mod.rs       # 掃描排程與去重
 │   │   ├── applications.rs
@@ -139,14 +143,46 @@ sysapp-tui/
 │   │   ├── pip.rs
 │   │   └── pkgutil.rs
 │   ├── enricher/
-│   │   ├── mod.rs       # 豐富化流程編排
-│   │   ├── language.rs  # 程式語言識別
+│   │   ├── mod.rs       # 補強流程統籌
+│   │   ├── language.rs  # 語言偵測
 │   │   └── usage.rs     # 使用頻率分析
 │   └── tui/
-│       └── mod.rs       # Ratatui 終端介面
+│       ├── mod.rs       # App：實作 tears::Application
+│       ├── message.rs   # Message / Mode / Column — TEA 詞彙
+│       ├── keymap.rs    # (Mode, Key) → Message 對應
+│       ├── theme.rs     # 語意色彩槽 + 三階降級
+│       └── components/
+│           ├── header.rs      # 識別牌、計數器、來源密度
+│           ├── table.rs       # 資料網格（游標與排序狀態）
+│           ├── search.rs      # 即時過濾輸入
+│           ├── detail.rs      # 單筆記錄浮層
+│           ├── help.rs        # `?` 按鍵說明浮層
+│           └── statusbar.rs   # 模式、位置、必要鍵位
 ├── Cargo.toml
-└── README.md
+├── README.md
+└── README-ZH.md
 ```
+
+### 架構
+
+TUI 採 The Elm Architecture，執行時為 [`tears`](https://crates.io/crates/tears)：
+
+- **`Message`** — 應用程式所有可能的狀態轉移
+- **`update`** — `(state, Message)` 的純函數，不碰終端機、不繪製
+- **`view`** — 狀態的純函數，不改狀態
+
+因此輸入處理與狀態轉移可在沒有 tty 的情況下測試。每個元件自帶狀態並知道
+如何把自己畫進一個 rect；元件不反向存取應用程式。
+
+### 測試
+
+```bash
+cargo test                          # 36 個測試
+cargo test render -- --nocapture    # 印出所有畫格
+```
+
+Render 測試透過 ratatui 的 `TestBackend` 實際畫出畫格，
+讓版面回歸在沒有終端機的情況下也能被抓到。
 
 ### 建置
 

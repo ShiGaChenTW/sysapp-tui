@@ -19,17 +19,15 @@
 
 ## Installation
 
-### Via Homebrew (coming soon)
+### Via Homebrew
 
-```bash
-brew install sysapp-tui
-```
+Not published yet — tracked as SCO-236. Build from source for now.
 
 ### Build from source
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourname/sysapp-tui.git
+git clone https://github.com/ShiGaChenTW/sysapp-tui.git
 cd sysapp-tui
 
 # Build (requires Rust toolchain)
@@ -60,17 +58,23 @@ After launch it will:
 
 | Key | Function |
 |-----|----------|
-| `↑` / `↓` | Move selection up/down |
-| `1` – `6` | Sort by column (name/source/language/version/install date/usage count/path) |
+| `j` / `k` / `↑` / `↓` | Move selection down/up |
+| `d` / `u` / `PgDn` / `PgUp` | Move one page |
+| `g` / `G` / `Home` / `End` | Jump to first/last entry |
+| `1` – `7` | Sort by column (name/source/language/version/install date/usage/path); press again to reverse |
 | `/` | Enter search mode |
-| `Esc` | Cancel search / return to list |
-| `Enter` | Confirm search (search mode) / no-op (normal mode) |
-| `i` | View detailed info for selected item |
-| `q` | Quit |
+| `Esc` | Cancel search / close overlay |
+| `Enter` / `i` | View detailed info for selected item (in search mode, `Enter` keeps the filter) |
+| `?` | Toggle the key reference overlay |
+| `q` / `Ctrl-C` | Quit |
+
+Usage and install-date columns start sorted descending — the interesting end of
+a count or a date is the large one. The `▲`/`▼` indicator always reflects the
+actual direction.
 
 ### Search mode
 
-Press `/` to enter search mode, then type a keyword to filter in real time. Matching is case-insensitive against package names. Press `/` again or `Esc` to cancel.
+Press `/` to enter search mode, then type a keyword to filter in real time. Matching is case-insensitive and covers the package name, source, detected language and install path. `Enter` keeps the filter and returns to browsing; `Esc` clears it and restores the full inventory.
 
 ### Detail view
 
@@ -143,11 +147,43 @@ sysapp-tui/
 │   │   ├── language.rs  # Language detection
 │   │   └── usage.rs     # Usage frequency analysis
 │   └── tui/
-│       └── mod.rs       # Ratatui terminal interface
+│       ├── mod.rs       # App: implements tears::Application
+│       ├── message.rs   # Message / Mode / Column — the TEA vocabulary
+│       ├── keymap.rs    # (Mode, Key) → Message
+│       ├── theme.rs     # Semantic color slots + three-tier degradation
+│       └── components/
+│           ├── header.rs      # Identity plate, counters, source density
+│           ├── table.rs       # Data grid (cursor + sort state)
+│           ├── search.rs      # Live filter input
+│           ├── detail.rs      # Single-record overlay
+│           ├── help.rs        # `?` key reference overlay
+│           └── statusbar.rs   # Mode, position, essential keys
 ├── Cargo.toml
 ├── README.md
 └── README-ZH.md
 ```
+
+### Architecture
+
+The TUI follows The Elm Architecture via the [`tears`](https://crates.io/crates/tears) runtime:
+
+- **`Message`** — every state transition the app can undergo
+- **`update`** — a pure function of `(state, Message)`; touches no terminal, draws nothing
+- **`view`** — a pure function of state; mutates nothing
+
+Input handling and state transitions are therefore testable without a tty. Each
+component owns its own state and knows how to draw itself into a rect;
+components never reach back into the application.
+
+### Tests
+
+```bash
+cargo test                          # 36 tests
+cargo test render -- --nocapture    # print every rendered frame
+```
+
+Render tests draw real frames through ratatui's `TestBackend`, so layout
+regressions surface without a terminal.
 
 ### Build
 
