@@ -11,6 +11,34 @@ use crate::model::{AppEntry, Source};
 use anyhow::Result;
 use std::collections::HashMap;
 
+/// Every source, in the order the progress screen lists them.
+///
+/// `brew` is first because it dominates the wall clock (~38s of a ~89s cold
+/// scan); showing it at the top makes the slow one the visible one.
+pub const SOURCES: [&str; 8] = [
+    "brew", "apps", "pkgutil", "gem", "cargo", "pip", "go", "npm",
+];
+
+/// Run a single source by name. Unknown names are a programming error.
+pub async fn scan_one(name: &'static str) -> Result<Vec<AppEntry>> {
+    match name {
+        "brew" => brew::scan().await,
+        "npm" => npm::scan().await,
+        "pip" => pip::scan().await,
+        "cargo" => cargo_scan::scan().await,
+        "go" => go::scan().await,
+        "gem" => gem::scan().await,
+        "pkgutil" => pkgutil::scan().await,
+        "apps" => applications::scan().await,
+        other => anyhow::bail!("unknown scan source {other:?}"),
+    }
+}
+
+/// Merge raw per-source results into the deduplicated inventory.
+pub fn merge(entries: Vec<AppEntry>) -> Vec<AppEntry> {
+    dedup(entries)
+}
+
 /// Source priority — higher = better metadata, kept over duplicates.
 fn source_priority(s: &Source) -> u8 {
     match s {
@@ -76,45 +104,16 @@ fn dedup(entries: Vec<AppEntry>) -> Vec<AppEntry> {
     result
 }
 
+/// Scan every source concurrently and return the deduplicated inventory.
+///
+/// Used by the in-TUI rescan, which reports progress with a single spinner
+/// rather than per source. The cold-start path uses `scan_one` instead so it
+/// can show each source finishing independently.
+///
+/// A source that fails is dropped, not propagated: a machine without Go or
+/// gem installed is normal, and one absent toolchain must not void the scan.
 pub async fn scan_all() -> Result<Vec<AppEntry>> {
-    eprintln!("Scanning installed applications...");
-
-    let (r_brew, r_npm, r_pip, r_cargo, r_go, r_gem, r_pkgutil, r_apps) = tokio::join!(
-        brew::scan(),
-        npm::scan(),
-        pip::scan(),
-        cargo_scan::scan(),
-        go::scan(),
-        gem::scan(),
-        pkgutil::scan(),
-        applications::scan(),
-    );
-
-    let mut entries = Vec::new();
-
-    for (label, result) in [
-        ("brew", r_brew),
-        ("npm", r_npm),
-        ("pip", r_pip),
-        ("cargo", r_cargo),
-        ("go", r_go),
-        ("gem", r_gem),
-        ("pkgutil", r_pkgutil),
-        ("apps", r_apps),
-    ] {
-        match result {
-            Ok(items) => {
-                eprintln!("  {label}: {} entries", items.len());
-                entries.extend(items);
-            }
-            Err(e) => eprintln!("  {label}: skipped ({e})"),
-        }
-    }
-
-    let pre_dedup = entries.len();
-    entries = dedup(entries);
-    let dupes = pre_dedup - entries.len();
-
-    eprintln!("Total: {} entries ({} deduplicated)", entries.len(), dupes);
-    Ok(entries)
+    let results = futures::future::join_all(SOURCES.map(scan_one)).await;
+    let entries = results.into_iter().flatten().flatten().collect();
+    Ok(merge(entries))
 }

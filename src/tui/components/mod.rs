@@ -7,6 +7,7 @@
 pub mod detail;
 pub mod header;
 pub mod help;
+pub mod scanning;
 pub mod search;
 pub mod statusbar;
 pub mod table;

@@ -116,6 +116,11 @@ pub enum Message {
     /// Spinner animation frame — only subscribed to while a rescan is running.
     Tick,
 
+    /// One source finished during a cold scan: `(source name, result)`.
+    SourceScanned(&'static str, Result<Vec<AppEntry>, String>),
+    /// All sources reported; enrichment produced the final inventory.
+    EnrichDone(Vec<AppEntry>),
+
     /// Show/hide packaging noise (pkgutil receipts, `/System/` apps).
     ToggleNoise,
     /// Show only units with no evidence of use.

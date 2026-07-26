@@ -44,28 +44,7 @@ async fn main() -> Result<()> {
         cache::load()
     };
 
-    match snapshot {
-        Some(snapshot) => tui::run(snapshot.entries, Some(snapshot.generated_at)).await,
-        None => {
-            let entries = scan_and_cache().await?;
-            tui::run(entries, None).await
-        }
-    }
-}
-
-/// Full scan + enrich, persisted for the next launch.
-async fn scan_and_cache() -> Result<Vec<model::AppEntry>> {
-    let mut entries = scanner::scan_all().await?;
-
-    eprintln!("Scan complete: {} entries. Enriching...", entries.len());
-    enricher::enrich(&mut entries).await;
-
-    // A cache write failure must not stop the user from seeing their data —
-    // it only costs them a slow launch next time.
-    if let Err(e) = cache::save(&entries) {
-        eprintln!("warning: could not write cache: {e:#}");
-    }
-
-    eprintln!("Enrichment complete. Launching TUI...");
-    Ok(entries)
+    // On a cold start the TUI opens immediately on a progress screen and runs
+    // the scan behind it, so the terminal is never blank.
+    tui::run(snapshot.map(|s| (s.entries, Some(s.generated_at)))).await
 }

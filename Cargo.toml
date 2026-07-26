@@ -14,3 +14,4 @@ tears = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
 unicode-width = "0.2.2"
+futures = "0.3.33"

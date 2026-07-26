@@ -44,6 +44,7 @@ use crate::model::AppEntry;
 use components::detail::DetailPanel;
 use components::header::{self, HeaderBar};
 use components::help::HelpOverlay;
+use components::scanning::{ScanningScreen, SourceState};
 use components::search::SearchBox;
 use components::statusbar::StatusBar;
 use components::table::{self, DataGrid};
@@ -94,6 +95,34 @@ pub struct App {
     hide_noise: bool,
     /// Show only units with no evidence of use.
     idle_only: bool,
+    /// Cold-start scan progress. `None` once the inventory is ready.
+    scan: Option<ScanProgress>,
+}
+
+/// Per-source progress during a cold scan.
+struct ScanProgress {
+    sources: Vec<(&'static str, SourceState)>,
+    collected: Vec<AppEntry>,
+    enriching: bool,
+}
+
+impl ScanProgress {
+    fn new() -> Self {
+        Self {
+            sources: crate::scanner::SOURCES
+                .iter()
+                .map(|s| (*s, SourceState::Pending))
+                .collect(),
+            collected: Vec::new(),
+            enriching: false,
+        }
+    }
+
+    fn all_reported(&self) -> bool {
+        self.sources
+            .iter()
+            .all(|(_, st)| !matches!(st, SourceState::Pending))
+    }
 }
 
 impl App {
@@ -181,9 +210,12 @@ impl App {
 
 impl Application for App {
     type Message = Message;
-    type Flags = (Vec<AppEntry>, Option<DateTime<Local>>);
+    /// `None` means "no cache — scan from scratch", and the app opens on the
+    /// progress screen instead of the grid.
+    type Flags = Option<(Vec<AppEntry>, Option<DateTime<Local>>)>;
 
-    fn new((entries, generated_at): Self::Flags) -> (Self, Command<Self::Message>) {
+    fn new(flags: Self::Flags) -> (Self, Command<Self::Message>) {
+        let (entries, generated_at) = flags.clone().unwrap_or_default();
         let mut app = Self {
             entries,
             rows: Vec::new(),
@@ -198,8 +230,22 @@ impl Application for App {
             notice: None,
             hide_noise: true,
             idle_only: false,
+            scan: None,
         };
         app.rebuild();
+
+        // With no cache, open the UI immediately on a progress screen and run
+        // every source concurrently behind it. Nothing blocks before first
+        // paint — the terminal is never blank.
+        if flags.is_none() {
+            app.scan = Some(ScanProgress::new());
+            let commands = crate::scanner::SOURCES.map(|name| {
+                Command::perform(crate::scanner::scan_one(name), move |result| {
+                    Message::SourceScanned(name, result.map_err(|e| format!("{e:#}")))
+                })
+            });
+            return (app, Command::batch(commands));
+        }
         (app, Command::none())
     }
 
@@ -260,7 +306,7 @@ impl Application for App {
             Message::RefreshStart => {
                 // Ignore a second `r` while one rescan is already running —
                 // two concurrent brew queries would be slower than one.
-                if self.refreshing {
+                if self.refreshing || self.scan.is_some() {
                     return Command::none();
                 }
                 self.refreshing = true;
@@ -287,6 +333,44 @@ impl Application for App {
                 self.notice = Some(format!("RESCAN FAILED — {e}"));
             }
             Message::Tick => self.tick = self.tick.wrapping_add(1),
+
+            Message::SourceScanned(name, result) => {
+                let Some(scan) = self.scan.as_mut() else {
+                    return Command::none();
+                };
+                let state = match result {
+                    Ok(entries) => {
+                        let n = entries.len();
+                        scan.collected.extend(entries);
+                        SourceState::Done(n)
+                    }
+                    // One dead source must not abort the whole scan — a machine
+                    // without Go or gem installed is normal, not an error.
+                    Err(e) => SourceState::Skipped(e),
+                };
+                if let Some(slot) = scan.sources.iter_mut().find(|(n, _)| *n == name) {
+                    slot.1 = state;
+                }
+
+                if scan.all_reported() {
+                    scan.enriching = true;
+                    let merged = crate::scanner::merge(std::mem::take(&mut scan.collected));
+                    return Command::perform(
+                        crate::enricher::enrich_owned(merged),
+                        Message::EnrichDone,
+                    );
+                }
+                return Command::none();
+            }
+            Message::EnrichDone(entries) => {
+                if let Err(e) = crate::cache::save(&entries) {
+                    self.notice = Some(format!("CACHE WRITE FAILED — {e}"));
+                }
+                self.entries = entries;
+                self.generated_at = None;
+                self.scan = None;
+                self.rebuild();
+            }
 
             Message::ToggleNoise => {
                 self.hide_noise = !self.hide_noise;
@@ -323,6 +407,16 @@ impl Application for App {
         let area = frame.area();
         if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
             self.render_too_small(frame, area);
+            return;
+        }
+
+        if let Some(scan) = &self.scan {
+            ScanningScreen {
+                sources: &scan.sources,
+                tick: self.tick,
+                enriching: scan.enriching,
+            }
+            .render(frame, area, &self.theme);
             return;
         }
 
@@ -386,7 +480,7 @@ impl Application for App {
                 Err(e) => Message::TerminalError(e.to_string()),
             }),
         ];
-        if self.refreshing {
+        if self.refreshing || self.scan.is_some() {
             subs.push(
                 Subscription::new(Timer::new(
                     NonZeroU64::new(SPINNER_INTERVAL_MS).expect("non-zero"),
@@ -414,10 +508,9 @@ async fn rescan() -> Result<Vec<AppEntry>, String> {
     Ok(entries)
 }
 
-pub async fn run(
-    entries: Vec<AppEntry>,
-    generated_at: Option<DateTime<Local>>,
-) -> Result<()> {
+/// `snapshot` is `None` on a cold start: the UI opens on the progress screen
+/// and scans behind it.
+pub async fn run(snapshot: Option<(Vec<AppEntry>, Option<DateTime<Local>>)>) -> Result<()> {
     // `ratatui::init` enters the alternate screen, enables raw mode, and
     // installs a panic hook that restores both — so a panic cannot leave the
     // user with a wedged terminal.
@@ -426,7 +519,7 @@ pub async fn run(
     let frame_rate = FrameRate::new(NonZeroU32::new(30).expect("30 is non-zero"))
         .map_err(|e| anyhow!("invalid frame rate: {e}"))?;
 
-    let result = Runtime::<App>::new((entries, generated_at), frame_rate)
+    let result = Runtime::<App>::new(snapshot, frame_rate)
         .run(&mut terminal)
         .await;
 
@@ -460,7 +553,7 @@ mod tests {
             entry("alpha", 100, Source::Homebrew),
             entry("bravo", 50, Source::Cargo),
         ];
-        App::new((entries, None)).0
+        App::new(Some((entries, None))).0
     }
 
     /// `update` hands back a `Command` for the runtime to execute. These tests
@@ -618,7 +711,7 @@ mod tests {
     fn noise_is_hidden_by_default_and_toggles() {
         let mut entries = vec![entry("ripgrep", 5, Source::Homebrew)];
         entries.push(entry("com.apple.pkg.Foo", 0, Source::Pkgutil));
-        let mut a = App::new((entries, None)).0;
+        let mut a = App::new(Some((entries, None))).0;
 
         assert_eq!(names(&a), ["ripgrep"], "pkgutil hidden by default");
         assert_eq!(a.hidden_noise(), 1);
@@ -636,7 +729,7 @@ mod tests {
         used.name = "ripgrep".into();
         let unused_a = entry("abandoned-tool", 0, Source::Homebrew);
         let unused_b = entry("another-dead-app", 0, Source::Cargo);
-        let mut a = App::new((vec![used, unused_a, unused_b], None)).0;
+        let mut a = App::new(Some((vec![used, unused_a, unused_b], None))).0;
 
         assert_eq!(names(&a).len(), 3);
         send(&mut a, Message::ToggleIdleOnly);
@@ -658,7 +751,7 @@ mod tests {
     fn recently_opened_app_is_not_idle() {
         let mut recent = entry("Zed", 0, Source::Applications);
         recent.last_used = Some(chrono::Local::now() - chrono::Duration::days(3));
-        let mut a = App::new((vec![recent], None)).0;
+        let mut a = App::new(Some((vec![recent], None))).0;
 
         send(&mut a, Message::ToggleIdleOnly);
         assert!(a.rows.is_empty(), "recently used app must not be listed as idle");
@@ -734,7 +827,7 @@ mod render_tests {
 
     #[test]
     fn render_browse_120x24() {
-        let app = App::new((sample(), None)).0;
+        let app = App::new(Some((sample(), None))).0;
         let out = draw(&app, 120, 24);
         banner("BROWSE 120x24", &out);
         assert!(out.contains("SYSAPP"), "identity plate missing");
@@ -745,7 +838,7 @@ mod render_tests {
 
     #[test]
     fn render_sorted_by_usage_120x24() {
-        let mut app = App::new((sample(), None)).0;
+        let mut app = App::new(Some((sample(), None))).0;
         let _ = app.update(Message::SortBy(Column::Usage));
         let out = draw(&app, 120, 24);
         banner("SORT BY USAGE 120x24", &out);
@@ -760,7 +853,7 @@ mod render_tests {
 
     #[test]
     fn render_search_120x24() {
-        let mut app = App::new((sample(), None)).0;
+        let mut app = App::new(Some((sample(), None))).0;
         let _ = app.update(Message::SearchOpen);
         for c in "rust".chars() {
             let _ = app.update(Message::SearchPush(c));
@@ -774,7 +867,7 @@ mod render_tests {
 
     #[test]
     fn render_detail_120x24() {
-        let mut app = App::new((sample(), None)).0;
+        let mut app = App::new(Some((sample(), None))).0;
         let _ = app.update(Message::DetailOpen);
         let out = draw(&app, 120, 24);
         banner("DETAIL OVERLAY 120x24", &out);
@@ -784,7 +877,7 @@ mod render_tests {
 
     #[test]
     fn render_help_120x30() {
-        let mut app = App::new((sample(), None)).0;
+        let mut app = App::new(Some((sample(), None))).0;
         let _ = app.update(Message::HelpToggle);
         let out = draw(&app, 120, 30);
         banner("HELP OVERLAY 120x30", &out);
@@ -793,7 +886,7 @@ mod render_tests {
 
     #[test]
     fn render_narrow_80x24() {
-        let app = App::new((sample(), None)).0;
+        let app = App::new(Some((sample(), None))).0;
         let out = draw(&app, 80, 24);
         banner("BROWSE 80x24", &out);
         assert!(out.contains("SYSAPP"), "must still render at the 80x24 floor");
@@ -802,16 +895,47 @@ mod render_tests {
     /// Below the floor we must say so, not draw a mangled layout.
     #[test]
     fn render_undersized_40x8() {
-        let app = App::new((sample(), None)).0;
+        let app = App::new(Some((sample(), None))).0;
         let out = draw(&app, 40, 8);
         banner("UNDERSIZED 40x8", &out);
         assert!(out.contains("VIEWPORT UNDERSIZED"));
     }
 
+    #[test]
+    fn render_cold_start_scan_screen() {
+        // `None` flags = no cache, so the app opens on the progress screen.
+        let (mut app, _cmd) = App::new(None);
+        let out = draw(&app, 120, 24);
+        banner("COLD START — ALL PENDING", &out);
+        assert!(out.contains("NO SNAPSHOT"), "must explain why it is scanning");
+        assert!(out.contains("BREW"), "sources must be listed");
+        assert!(out.contains("slowest source"), "brew must be flagged as slow");
+
+        // Partial progress: brew done, one source unavailable.
+        let _ = app.update(Message::SourceScanned("brew", Ok(vec![])));
+        let _ = app.update(Message::SourceScanned("go", Err("go not installed".into())));
+        let out = draw(&app, 120, 24);
+        banner("COLD START — PARTIAL", &out);
+        assert!(out.contains("0 UNITS"), "completed source shows its count");
+        assert!(out.contains("SKIPPED"), "unavailable source is marked, not fatal");
+    }
+
+    /// A source that fails must not abort the scan or lose the others.
+    #[test]
+    fn failed_source_does_not_abort_the_scan() {
+        let (mut app, _) = App::new(None);
+        for name in crate::scanner::SOURCES {
+            let _ = app.update(Message::SourceScanned(name, Err("boom".into())));
+        }
+        // All reported (all failed) → enrichment still runs and completes.
+        let _ = app.update(Message::EnrichDone(vec![]));
+        assert!(app.scan.is_none(), "scan screen must clear even if every source failed");
+    }
+
     /// Every frame must survive an empty result set without panicking.
     #[test]
     fn render_no_matches() {
-        let mut app = App::new((sample(), None)).0;
+        let mut app = App::new(Some((sample(), None))).0;
         let _ = app.update(Message::SearchOpen);
         for c in "zzzz".chars() {
             let _ = app.update(Message::SearchPush(c));

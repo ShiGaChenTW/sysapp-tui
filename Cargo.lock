@@ -1677,6 +1677,7 @@ dependencies = [
  "chrono",
  "crossterm 0.29.0",
  "dirs",
+ "futures",
  "ratatui",
  "serde",
  "serde_json",
