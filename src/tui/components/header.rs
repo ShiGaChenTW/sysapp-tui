@@ -4,11 +4,13 @@
 //! ASCII bracket framing, a registration mark used as a geometric element, and
 //! a full-width rule segregating the operational unit from the data grid.
 
+use chrono::{DateTime, Local};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use crate::cache;
 use crate::model::{AppEntry, Source};
 use crate::tui::message::Column;
 use crate::tui::theme::Theme;
@@ -22,6 +24,7 @@ pub struct HeaderBar<'a> {
     pub sort_col: Column,
     pub sort_asc: bool,
     pub query: &'a str,
+    pub generated_at: Option<DateTime<Local>>,
 }
 
 impl HeaderBar<'_> {
@@ -49,10 +52,19 @@ impl HeaderBar<'_> {
             Span::styled("TUI", theme.heading()),
             Span::styled(" ®", theme.accented()),
         ]);
-        let right = Line::from(Span::styled(
-            format!("REV {} / UNIT D-01 ", env!("CARGO_PKG_VERSION")),
-            theme.muted(),
-        ));
+        // Staleness is never hidden: a cached inventory says how old it is,
+        // a freshly scanned one says so explicitly.
+        let freshness = match self.generated_at {
+            Some(at) => format!("SNAPSHOT {}", cache::age_label(at)),
+            None => "LIVE SCAN".to_string(),
+        };
+        let right = Line::from(vec![
+            Span::styled(freshness, theme.accented()),
+            Span::styled(
+                format!("  REV {} / UNIT D-01 ", env!("CARGO_PKG_VERSION")),
+                theme.muted(),
+            ),
+        ]);
 
         frame.render_widget(Paragraph::new(left).style(theme.base()), area);
         frame.render_widget(

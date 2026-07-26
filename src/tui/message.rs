@@ -6,6 +6,8 @@
 
 use crossterm::event::Event;
 
+use crate::model::AppEntry;
+
 /// Which input context owns the keyboard right now.
 ///
 /// Exactly one mode is active at a time; overlays are focus traps
@@ -105,6 +107,14 @@ pub enum Message {
     DetailOpen,
     DetailClose,
     HelpToggle,
+
+    /// Begin a background rescan. The UI stays fully interactive throughout.
+    RefreshStart,
+    /// A rescan finished; carries the fresh inventory.
+    RefreshDone(Vec<AppEntry>),
+    RefreshFailed(String),
+    /// Spinner animation frame — only subscribed to while a rescan is running.
+    Tick,
 
     Quit,
 }

@@ -27,9 +27,10 @@ mod keymap;
 mod message;
 mod theme;
 
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroU64};
 
 use anyhow::{Result, anyhow};
+use chrono::{DateTime, Local};
 use crossterm::event::Event;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -37,6 +38,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use tears::prelude::*;
 use tears::subscription::terminal::TerminalEvents;
+use tears::subscription::time::{Timer, TimerEvent};
 
 use crate::model::AppEntry;
 use components::detail::DetailPanel;
@@ -53,6 +55,10 @@ use theme::Theme;
 const MIN_WIDTH: u16 = 60;
 const MIN_HEIGHT: u16 = 10;
 
+/// Braille spinner cadence (tui-design §5): fast enough to read as motion,
+/// slow enough not to burn a wake-up budget.
+const SPINNER_INTERVAL_MS: u64 = 120;
+
 pub struct App {
     entries: Vec<AppEntry>,
     /// Indices into `entries`, after filtering and sorting. The single source
@@ -64,6 +70,16 @@ pub struct App {
     grid: DataGrid,
     search: SearchBox,
     theme: Theme,
+    /// When the displayed inventory was scanned. `None` means it was scanned
+    /// during this launch, so it is live rather than restored from cache.
+    generated_at: Option<DateTime<Local>>,
+    /// A background rescan is in flight. The UI stays fully interactive; only
+    /// the status band changes.
+    refreshing: bool,
+    /// Spinner frame, advanced by `Tick` while refreshing.
+    tick: usize,
+    /// Transient one-line feedback (rescan finished, rescan failed).
+    notice: Option<String>,
 }
 
 impl App {
@@ -80,6 +96,13 @@ impl App {
     /// see the most-used units, and following the old selection strands the
     /// viewport somewhere in the middle of a list the user just reordered.
     fn rebuild(&mut self) {
+        self.rebuild_anchored(None);
+    }
+
+    /// Rebuild, then put the cursor back on the entry with `anchor` as its
+    /// name. Used after a background rescan: the list contents changed
+    /// underneath the user, but the unit they were looking at should not move.
+    fn rebuild_anchored(&mut self, anchor: Option<String>) {
         let mut rows: Vec<usize> = self
             .entries
             .iter()
@@ -94,7 +117,17 @@ impl App {
             if asc { ord } else { ord.reverse() }
         });
         self.rows = rows;
-        self.grid.select(if self.rows.is_empty() { None } else { Some(0) });
+
+        let cursor = match anchor {
+            Some(name) => self
+                .rows
+                .iter()
+                .position(|&i| self.entries[i].name == name)
+                .or(if self.rows.is_empty() { None } else { Some(0) }),
+            None if self.rows.is_empty() => None,
+            None => Some(0),
+        };
+        self.grid.select(cursor);
     }
 
     fn render_too_small(&self, frame: &mut Frame, area: Rect) {
@@ -114,9 +147,9 @@ impl App {
 
 impl Application for App {
     type Message = Message;
-    type Flags = Vec<AppEntry>;
+    type Flags = (Vec<AppEntry>, Option<DateTime<Local>>);
 
-    fn new(entries: Vec<AppEntry>) -> (Self, Command<Self::Message>) {
+    fn new((entries, generated_at): Self::Flags) -> (Self, Command<Self::Message>) {
         let mut app = Self {
             entries,
             rows: Vec::new(),
@@ -125,6 +158,10 @@ impl Application for App {
             grid: DataGrid::default(),
             search: SearchBox::default(),
             theme: Theme::detect(),
+            generated_at,
+            refreshing: false,
+            tick: 0,
+            notice: None,
         };
         app.rebuild();
         (app, Command::none())
@@ -184,6 +221,37 @@ impl Application for App {
             }
             Message::DetailClose => self.mode = Mode::Browse,
 
+            Message::RefreshStart => {
+                // Ignore a second `r` while one rescan is already running —
+                // two concurrent brew queries would be slower than one.
+                if self.refreshing {
+                    return Command::none();
+                }
+                self.refreshing = true;
+                self.tick = 0;
+                self.notice = None;
+                return Command::perform(rescan(), |result| match result {
+                    Ok(entries) => Message::RefreshDone(entries),
+                    Err(e) => Message::RefreshFailed(e),
+                });
+            }
+            Message::RefreshDone(entries) => {
+                let anchor = self.selected_entry().map(|e| e.name.clone());
+                let count = entries.len();
+                self.entries = entries;
+                self.generated_at = None; // freshly scanned — this is live data
+                self.refreshing = false;
+                self.notice = Some(format!("RESCAN COMPLETE — {count} UNITS"));
+                // Filter and sort are preserved; only the underlying data moved.
+                self.rebuild_anchored(anchor);
+            }
+            Message::RefreshFailed(e) => {
+                // Keep the old inventory. Stale data beats an empty screen.
+                self.refreshing = false;
+                self.notice = Some(format!("RESCAN FAILED — {e}"));
+            }
+            Message::Tick => self.tick = self.tick.wrapping_add(1),
+
             Message::HelpToggle => {
                 if self.mode == Mode::Help {
                     self.mode = self.resume_mode;
@@ -216,6 +284,7 @@ impl Application for App {
             sort_col: self.grid.sort_col,
             sort_asc: self.grid.sort_asc,
             query: self.search.query(),
+            generated_at: self.generated_at,
         }
         .render(frame, head, &self.theme);
 
@@ -242,24 +311,56 @@ impl Application for App {
                 mode: self.mode,
                 position: self.grid.selected().filter(|_| !self.rows.is_empty()),
                 total: self.rows.len(),
+                refreshing: self.refreshing,
+                tick: self.tick,
+                notice: self.notice.as_deref(),
             }
             .render(frame, foot, &self.theme);
         }
     }
 
     fn subscriptions(&self) -> Vec<Subscription<Self::Message>> {
-        // Terminal input only. The inventory is a static snapshot, so there is
-        // no timer subscription and the process stays idle between keystrokes.
-        vec![
+        // `subscriptions` is a pure function of state, so the spinner timer
+        // exists only while a rescan is running. Idle sessions subscribe to
+        // terminal input alone and the process stays asleep between keystrokes.
+        let mut subs = vec![
             Subscription::new(TerminalEvents::new()).map(|result| match result {
                 Ok(event) => Message::Terminal(event),
                 Err(e) => Message::TerminalError(e.to_string()),
             }),
-        ]
+        ];
+        if self.refreshing {
+            subs.push(
+                Subscription::new(Timer::new(
+                    NonZeroU64::new(SPINNER_INTERVAL_MS).expect("non-zero"),
+                ))
+                .map(|TimerEvent::Tick| Message::Tick),
+            );
+        }
+        subs
     }
 }
 
-pub async fn run(entries: Vec<AppEntry>) -> Result<()> {
+/// Full rescan, run off the UI thread by `Command::perform`.
+///
+/// Errors come back as a `String` rather than propagating: a failed rescan
+/// must not take down a session that is still showing perfectly usable data.
+async fn rescan() -> Result<Vec<AppEntry>, String> {
+    let mut entries = crate::scanner::scan_all()
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    crate::enricher::enrich(&mut entries).await;
+    if let Err(e) = crate::cache::save(&entries) {
+        // The user still gets fresh data; only the next launch pays for this.
+        return Err(format!("scanned but cache write failed: {e:#}"));
+    }
+    Ok(entries)
+}
+
+pub async fn run(
+    entries: Vec<AppEntry>,
+    generated_at: Option<DateTime<Local>>,
+) -> Result<()> {
     // `ratatui::init` enters the alternate screen, enables raw mode, and
     // installs a panic hook that restores both — so a panic cannot leave the
     // user with a wedged terminal.
@@ -268,7 +369,9 @@ pub async fn run(entries: Vec<AppEntry>) -> Result<()> {
     let frame_rate = FrameRate::new(NonZeroU32::new(30).expect("30 is non-zero"))
         .map_err(|e| anyhow!("invalid frame rate: {e}"))?;
 
-    let result = Runtime::<App>::new(entries, frame_rate).run(&mut terminal).await;
+    let result = Runtime::<App>::new((entries, generated_at), frame_rate)
+        .run(&mut terminal)
+        .await;
 
     ratatui::restore();
     result.map_err(|e| anyhow!("tui runtime failed: {e}"))
@@ -300,7 +403,7 @@ mod tests {
             entry("alpha", 100, Source::Homebrew),
             entry("bravo", 50, Source::Cargo),
         ];
-        App::new(entries).0
+        App::new((entries, None)).0
     }
 
     /// `update` hands back a `Command` for the runtime to execute. These tests
@@ -382,6 +485,76 @@ mod tests {
         assert_eq!(a.mode, Mode::Detail);
     }
 
+    /// A rescan must not block the UI, and a second `r` while one is running
+    /// must be ignored rather than launching a duplicate brew query.
+    #[test]
+    fn refresh_is_single_flight_and_non_blocking() {
+        let mut a = app();
+        assert!(!a.refreshing);
+        send(&mut a, Message::RefreshStart);
+        assert!(a.refreshing);
+
+        // Navigation, sorting and filtering all still work mid-rescan.
+        send(&mut a, Message::Move(1));
+        assert_eq!(a.grid.selected(), Some(1));
+        send(&mut a, Message::SortBy(Column::Usage));
+        assert_eq!(a.grid.sort_col, Column::Usage);
+
+        // A second refresh while one is in flight changes nothing.
+        send(&mut a, Message::RefreshStart);
+        assert!(a.refreshing);
+    }
+
+    /// After a rescan the cursor stays on the same *unit*, and any active
+    /// filter survives.
+    #[test]
+    fn refresh_preserves_cursor_and_filter() {
+        let mut a = app();
+        send(&mut a, Message::SearchOpen);
+        for c in "l".chars() {
+            send(&mut a, Message::SearchPush(c));
+        }
+        // Only "alpha" and "charlie" contain an 'l' — "bravo" does not, and
+        // neither do any of the source/language/path fields.
+        assert_eq!(names(&a), ["alpha", "charlie"]);
+        send(&mut a, Message::Move(1));
+        assert_eq!(a.selected_entry().unwrap().name, "charlie");
+
+        // Fresh scan returns the same units in a different order, plus a new one.
+        let fresh = vec![
+            // "echo" deliberately has no 'l', so the active filter still
+            // yields exactly the two units the test tracks.
+            entry("echo", 1, Source::Npm),
+            entry("charlie", 5, Source::Npm),
+            entry("alpha", 100, Source::Homebrew),
+            entry("bravo", 50, Source::Cargo),
+        ];
+        send(&mut a, Message::RefreshStart);
+        send(&mut a, Message::RefreshDone(fresh));
+
+        assert!(!a.refreshing);
+        assert_eq!(a.entries.len(), 4, "new inventory adopted");
+        assert_eq!(names(&a), ["alpha", "charlie"], "filter still applied");
+        assert_eq!(
+            a.selected_entry().unwrap().name,
+            "charlie",
+            "cursor stayed on the same unit"
+        );
+        assert!(a.generated_at.is_none(), "rescanned data is live, not a snapshot");
+    }
+
+    /// A failed rescan must keep the existing inventory on screen.
+    #[test]
+    fn failed_refresh_keeps_old_data() {
+        let mut a = app();
+        send(&mut a, Message::RefreshStart);
+        send(&mut a, Message::RefreshFailed("brew exploded".into()));
+
+        assert!(!a.refreshing);
+        assert_eq!(a.entries.len(), 3, "old inventory retained");
+        assert!(a.notice.as_deref().unwrap_or_default().contains("FAILED"));
+    }
+
     #[test]
     fn jump_messages_reach_both_ends() {
         let mut a = app();
@@ -452,7 +625,7 @@ mod render_tests {
 
     #[test]
     fn render_browse_120x24() {
-        let app = App::new(sample()).0;
+        let app = App::new((sample(), None)).0;
         let out = draw(&app, 120, 24);
         banner("BROWSE 120x24", &out);
         assert!(out.contains("SYSAPP"), "identity plate missing");
@@ -463,7 +636,7 @@ mod render_tests {
 
     #[test]
     fn render_sorted_by_usage_120x24() {
-        let mut app = App::new(sample()).0;
+        let mut app = App::new((sample(), None)).0;
         let _ = app.update(Message::SortBy(Column::Usage));
         let out = draw(&app, 120, 24);
         banner("SORT BY USAGE 120x24", &out);
@@ -478,7 +651,7 @@ mod render_tests {
 
     #[test]
     fn render_search_120x24() {
-        let mut app = App::new(sample()).0;
+        let mut app = App::new((sample(), None)).0;
         let _ = app.update(Message::SearchOpen);
         for c in "rust".chars() {
             let _ = app.update(Message::SearchPush(c));
@@ -492,7 +665,7 @@ mod render_tests {
 
     #[test]
     fn render_detail_120x24() {
-        let mut app = App::new(sample()).0;
+        let mut app = App::new((sample(), None)).0;
         let _ = app.update(Message::DetailOpen);
         let out = draw(&app, 120, 24);
         banner("DETAIL OVERLAY 120x24", &out);
@@ -502,7 +675,7 @@ mod render_tests {
 
     #[test]
     fn render_help_120x30() {
-        let mut app = App::new(sample()).0;
+        let mut app = App::new((sample(), None)).0;
         let _ = app.update(Message::HelpToggle);
         let out = draw(&app, 120, 30);
         banner("HELP OVERLAY 120x30", &out);
@@ -511,7 +684,7 @@ mod render_tests {
 
     #[test]
     fn render_narrow_80x24() {
-        let app = App::new(sample()).0;
+        let app = App::new((sample(), None)).0;
         let out = draw(&app, 80, 24);
         banner("BROWSE 80x24", &out);
         assert!(out.contains("SYSAPP"), "must still render at the 80x24 floor");
@@ -520,7 +693,7 @@ mod render_tests {
     /// Below the floor we must say so, not draw a mangled layout.
     #[test]
     fn render_undersized_40x8() {
-        let app = App::new(sample()).0;
+        let app = App::new((sample(), None)).0;
         let out = draw(&app, 40, 8);
         banner("UNDERSIZED 40x8", &out);
         assert!(out.contains("VIEWPORT UNDERSIZED"));
@@ -529,7 +702,7 @@ mod render_tests {
     /// Every frame must survive an empty result set without panicking.
     #[test]
     fn render_no_matches() {
-        let mut app = App::new(sample()).0;
+        let mut app = App::new((sample(), None)).0;
         let _ = app.update(Message::SearchOpen);
         for c in "zzzz".chars() {
             let _ = app.update(Message::SearchPush(c));

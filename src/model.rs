@@ -1,7 +1,8 @@
 use chrono::{DateTime, Local};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Source {
     Homebrew,
     HomebrewCask,
@@ -30,7 +31,7 @@ impl fmt::Display for Source {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Language {
     Rust,
     Go,
@@ -68,7 +69,7 @@ impl fmt::Display for Language {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppEntry {
     pub name: String,
     pub version: Option<String>,

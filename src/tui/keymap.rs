@@ -46,6 +46,7 @@ fn browse(key: KeyEvent) -> Option<Message> {
         KeyCode::Char('G') | KeyCode::End => Some(Message::JumpBottom),
         KeyCode::Char('/') => Some(Message::SearchOpen),
         KeyCode::Char('?') => Some(Message::HelpToggle),
+        KeyCode::Char('r') => Some(Message::RefreshStart),
         KeyCode::Enter | KeyCode::Char('i') => Some(Message::DetailOpen),
         // L2: '1'..'7' pick the sort column. '0' is intentionally unbound.
         KeyCode::Char(c @ '1'..='9') => {
@@ -73,6 +74,7 @@ fn detail(key: KeyEvent) -> Option<Message> {
         KeyCode::Esc | KeyCode::Char('i') | KeyCode::Enter => Some(Message::DetailClose),
         KeyCode::Char('q') => Some(Message::Quit),
         KeyCode::Char('?') => Some(Message::HelpToggle),
+        KeyCode::Char('r') => Some(Message::RefreshStart),
         _ => None,
     }
 }
@@ -127,6 +129,18 @@ mod tests {
         for m in [Mode::Browse, Mode::Search, Mode::Detail, Mode::Help] {
             assert!(matches!(translate(m, k), Some(Message::Quit)), "mode {m:?}");
         }
+    }
+
+    #[test]
+    fn r_refreshes_while_browsing_but_types_in_search() {
+        assert!(matches!(
+            translate(Mode::Browse, press('r')),
+            Some(Message::RefreshStart)
+        ));
+        assert!(matches!(
+            translate(Mode::Search, press('r')),
+            Some(Message::SearchPush('r'))
+        ));
     }
 
     #[test]

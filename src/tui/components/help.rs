@@ -31,6 +31,8 @@ const BINDINGS: &[(Option<&str>, &str)] = &[
     (Some("Enter"), "keep filter, return to browse"),
     (None, "SORT"),
     (Some("1 … 7"), "sort by column; repeat to reverse"),
+    (None, "DATA"),
+    (Some("r"), "rescan in the background — keys stay live"),
     (None, "SESSION"),
     (Some("?"), "toggle this overlay"),
     (Some("q / Ctrl-C"), "quit"),
@@ -124,6 +126,10 @@ mod tests {
         assert!(matches!(
             translate(Mode::Browse, press('G')),
             Some(Message::JumpBottom)
+        ));
+        assert!(matches!(
+            translate(Mode::Browse, press('r')),
+            Some(Message::RefreshStart)
         ));
     }
 }
