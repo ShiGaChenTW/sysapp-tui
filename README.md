@@ -12,7 +12,9 @@
 - **Smart deduplication**: Automatically merges same-name packages, keeping the richest info (priority: Homebrew > Cask > Applications > Cargo > Go > npm/pip/gem > pkgutil)
 - **Language detection**: Automatically identifies each package's programming language (Rust, Go, Python, JavaScript, Ruby, C, Swift, etc.)
 - **Usage frequency analysis**: Parses `.zsh_history` for CLI tool usage counts; queries `mdls` for GUI app last-used timestamps
-- **Interactive TUI**: Ratatui-driven terminal interface with sorting, search, and detail views
+- **Opens instantly**: the inventory is cached, so launches take ~10ms instead of ~90s
+- **Interactive TUI**: sorting, live search, detail records, and an idle-only view
+- **Noise filtering**: pkgutil receipts and `/System/` bundles hidden by default
 - **Completely offline**: No network requests — all data comes from local system commands
 
 ---
@@ -49,10 +51,19 @@ cargo build --release
 sysapp-tui
 ```
 
-After launch it will:
-1. **Scan phase**: Query all package managers in parallel to collect raw data
-2. **Enrich phase**: Detect programming languages, analyze usage frequency and last-used time
-3. **TUI phase**: Open the interactive dashboard
+The first run has no cache, so it opens on a progress screen and scans behind
+it — every source reports as it finishes. A full scan takes around 90 seconds,
+almost all of it inside `brew info`. The result is cached, so **every later
+launch opens in about 10ms**.
+
+```bash
+sysapp-tui --refresh   # ignore the cache and rescan
+sysapp-tui --help
+```
+
+Press `r` inside the TUI to rescan in the background without restarting; the
+interface stays fully responsive while it runs. The header always shows how
+old the data is (`SNAPSHOT 2H AGO`, or `LIVE SCAN` after a rescan).
 
 ### TUI keybindings
 
@@ -65,6 +76,9 @@ After launch it will:
 | `/` | Enter search mode |
 | `Esc` | Cancel search / close overlay |
 | `Enter` / `i` | View detailed info for selected item (in search mode, `Enter` keeps the filter) |
+| `p` | Show/hide packaging noise (pkgutil receipts, `/System/` bundles) |
+| `s` | Show only units with no evidence of use |
+| `r` | Rescan in the background — the interface stays live |
 | `?` | Toggle the key reference overlay |
 | `q` / `Ctrl-C` | Quit |
 
@@ -75,6 +89,24 @@ actual direction.
 ### Search mode
 
 Press `/` to enter search mode, then type a keyword to filter in real time. Matching is case-insensitive and covers the package name, source, detected language and install path. `Enter` keeps the filter and returns to browsing; `Esc` clears it and restores the full inventory.
+
+### Noise and idle filters
+
+`pkgutil` reports Apple's installer receipts — reverse-DNS ids with no version,
+language or usage data — and `system_profiler` reports every bundle under
+`/System/`. On a typical machine that is 402 of 906 entries: 44% of the
+inventory, diluting every sort and every search. Both are hidden by default;
+`p` toggles them, and the header reports how many are withheld.
+
+`s` narrows to units with no evidence of use: zero shell invocations *and* no
+recent Spotlight open. Both conditions are required because the two data
+sources are asymmetric — invocation counts have no timestamp and exist only for
+CLI tools, while last-used exists only for GUI apps.
+
+> **Known limitation**: applications installed under `/Applications` are
+> currently missing from the inventory. `system_profiler` only reports
+> `/System/` bundles unless the process has Full Disk Access. Tracked for the
+> next release.
 
 ### Detail view
 
@@ -130,7 +162,8 @@ When the same package name is found across multiple sources:
 ```
 sysapp-tui/
 ├── src/
-│   ├── main.rs          # Entry point: scan → enrich → TUI
+│   ├── main.rs          # Entry point: CLI flags, cache lookup, launch
+│   ├── cache.rs         # On-disk inventory snapshot
 │   ├── model.rs         # Data model (AppEntry, Source, Language)
 │   ├── scanner/
 │   │   ├── mod.rs       # Scan scheduling & dedup
@@ -153,6 +186,7 @@ sysapp-tui/
 │       ├── theme.rs     # Semantic color slots + three-tier degradation
 │       └── components/
 │           ├── header.rs      # Identity plate, counters, source density
+│           ├── scanning.rs    # Cold-start progress screen
 │           ├── table.rs       # Data grid (cursor + sort state)
 │           ├── search.rs      # Live filter input
 │           ├── detail.rs      # Single-record overlay
@@ -178,7 +212,7 @@ components never reach back into the application.
 ### Tests
 
 ```bash
-cargo test                          # 36 tests
+cargo test                          # 54 tests
 cargo test render -- --nocapture    # print every rendered frame
 ```
 

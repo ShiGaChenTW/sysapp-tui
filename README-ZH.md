@@ -65,12 +65,44 @@ sysapp-tui
 | `/` | 進入搜尋模式 |
 | `Esc` | 取消搜尋／關閉浮層 |
 | `Enter` / `i` | 檢視選取項目的詳細資訊 |
+| `p` | 顯示／隱藏封裝雜訊（pkgutil 收據、`/System/` 元件） |
+| `s` | 只顯示沒有使用跡象的項目 |
+| `r` | 背景重新掃描——介面全程維持可用 |
 | `?` | 開關按鍵說明浮層 |
 | `q` / `Ctrl-C` | 離開 |
 
 使用次數與安裝日期兩欄第一次選取時預設由大到小排序——數量與日期真正有意義的
 那一端是大的那頭。`▲`／`▼` 指示永遠反映實際排序方向。
 
+
+### 快取與重新掃描
+
+第一次執行沒有快取，會先開啟進度畫面並在背後掃描，每個來源完成就即時回報。
+完整掃描約需 90 秒，其中絕大部分耗在 `brew info`。結果會寫入快取，
+**之後每次啟動約 10 毫秒開啟**。
+
+```bash
+sysapp-tui --refresh   # 忽略快取，強制重新掃描
+sysapp-tui --help
+```
+
+在 TUI 內按 `r` 可背景重新掃描而不需重啟，掃描期間介面完全不卡。
+標頭永遠顯示資料的新鮮度（`SNAPSHOT 2H AGO`，重掃後為 `LIVE SCAN`）。
+
+### 雜訊與閒置過濾
+
+`pkgutil` 回報的是 Apple 安裝收據——reverse-DNS 形式的 id，沒有版本、沒有語言、
+沒有使用資料；`system_profiler` 則會回報所有 `/System/` 底下的元件。
+在一般機器上這是 906 筆中的 402 筆，佔 44%，稀釋了每一次排序與搜尋。
+兩者預設隱藏，`p` 可切換，標頭會顯示目前隱藏了幾筆。
+
+`s` 只保留沒有使用跡象的項目：零 shell 呼叫**且**近期沒有被 Spotlight 開啟過。
+兩個條件缺一不可，因為兩份資料來源本質不對稱——呼叫次數沒有時間戳且只涵蓋
+CLI 工具，最後使用時間則只有 GUI 應用才有。
+
+> **已知限制**：目前 `/Applications` 底下使用者自行安裝的應用不會出現在清單中。
+> `system_profiler` 在沒有「完全取得磁碟權限」的情況下只會回報 `/System/` 底下的
+> 元件。已列入下一版追蹤。
 
 ### 搜尋模式
 
@@ -130,7 +162,8 @@ sysapp-tui
 ```
 sysapp-tui/
 ├── src/
-│   ├── main.rs          # 進入點：掃描 → 補強 → TUI
+│   ├── main.rs          # 進入點：CLI 旗標、快取查詢、啟動
+│   ├── cache.rs         # 磁碟上的盤點快照
 │   ├── model.rs         # 資料模型（AppEntry, Source, Language）
 │   ├── scanner/
 │   │   ├── mod.rs       # 掃描排程與去重
@@ -153,6 +186,7 @@ sysapp-tui/
 │       ├── theme.rs     # 語意色彩槽 + 三階降級
 │       └── components/
 │           ├── header.rs      # 識別牌、計數器、來源密度
+│           ├── scanning.rs    # 冷啟動進度畫面
 │           ├── table.rs       # 資料網格（游標與排序狀態）
 │           ├── search.rs      # 即時過濾輸入
 │           ├── detail.rs      # 單筆記錄浮層
@@ -177,7 +211,7 @@ TUI 採 The Elm Architecture，執行時為 [`tears`](https://crates.io/crates/t
 ### 測試
 
 ```bash
-cargo test                          # 36 個測試
+cargo test                          # 54 個測試
 cargo test render -- --nocapture    # 印出所有畫格
 ```
 
