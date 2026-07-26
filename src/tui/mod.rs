@@ -59,6 +59,15 @@ const MIN_HEIGHT: u16 = 10;
 /// slow enough not to burn a wake-up budget.
 const SPINNER_INTERVAL_MS: u64 = 120;
 
+/// How long without use before a unit counts as idle. Six months is long
+/// enough to survive a quarter of neglect but short enough to still flag
+/// things worth uninstalling.
+const IDLE_MONTHS: i64 = 6;
+
+fn idle_cutoff() -> DateTime<Local> {
+    Local::now() - chrono::Duration::days(IDLE_MONTHS * 30)
+}
+
 pub struct App {
     entries: Vec<AppEntry>,
     /// Indices into `entries`, after filtering and sorting. The single source
@@ -80,6 +89,11 @@ pub struct App {
     tick: usize,
     /// Transient one-line feedback (rescan finished, rescan failed).
     notice: Option<String>,
+    /// Hide packaging noise. On by default: 115 of 906 entries on a typical
+    /// machine are pkgutil receipts that dilute every sort and search.
+    hide_noise: bool,
+    /// Show only units with no evidence of use.
+    idle_only: bool,
 }
 
 impl App {
@@ -107,7 +121,7 @@ impl App {
             .entries
             .iter()
             .enumerate()
-            .filter(|(_, e)| self.search.matches(e))
+            .filter(|(_, e)| self.visible(e))
             .map(|(i, _)| i)
             .collect();
 
@@ -128,6 +142,26 @@ impl App {
             None => Some(0),
         };
         self.grid.select(cursor);
+    }
+
+    /// Every filter that decides whether an entry reaches the grid.
+    fn visible(&self, e: &AppEntry) -> bool {
+        if self.hide_noise && e.is_system_noise() {
+            return false;
+        }
+        if self.idle_only && !e.is_idle(idle_cutoff()) {
+            return false;
+        }
+        self.search.matches(e)
+    }
+
+    /// How many entries the noise filter is currently withholding. Shown in
+    /// the header so the totals can never look inexplicably wrong.
+    fn hidden_noise(&self) -> usize {
+        if !self.hide_noise {
+            return 0;
+        }
+        self.entries.iter().filter(|e| e.is_system_noise()).count()
     }
 
     fn render_too_small(&self, frame: &mut Frame, area: Rect) {
@@ -162,6 +196,8 @@ impl Application for App {
             refreshing: false,
             tick: 0,
             notice: None,
+            hide_noise: true,
+            idle_only: false,
         };
         app.rebuild();
         (app, Command::none())
@@ -252,6 +288,25 @@ impl Application for App {
             }
             Message::Tick => self.tick = self.tick.wrapping_add(1),
 
+            Message::ToggleNoise => {
+                self.hide_noise = !self.hide_noise;
+                self.notice = Some(if self.hide_noise {
+                    "PACKAGING NOISE HIDDEN".into()
+                } else {
+                    "SHOWING ALL SOURCES".into()
+                });
+                self.rebuild();
+            }
+            Message::ToggleIdleOnly => {
+                self.idle_only = !self.idle_only;
+                self.notice = Some(if self.idle_only {
+                    format!("IDLE ONLY — NO USE IN {IDLE_MONTHS} MONTHS")
+                } else {
+                    "SHOWING ALL UNITS".into()
+                });
+                self.rebuild();
+            }
+
             Message::HelpToggle => {
                 if self.mode == Mode::Help {
                     self.mode = self.resume_mode;
@@ -285,6 +340,8 @@ impl Application for App {
             sort_asc: self.grid.sort_asc,
             query: self.search.query(),
             generated_at: self.generated_at,
+            hidden_noise: self.hidden_noise(),
+            idle_only: self.idle_only,
         }
         .render(frame, head, &self.theme);
 
@@ -553,6 +610,58 @@ mod tests {
         assert!(!a.refreshing);
         assert_eq!(a.entries.len(), 3, "old inventory retained");
         assert!(a.notice.as_deref().unwrap_or_default().contains("FAILED"));
+    }
+
+    /// Packaging noise is hidden by default, and the header is told how much
+    /// is being withheld so the totals stay explicable.
+    #[test]
+    fn noise_is_hidden_by_default_and_toggles() {
+        let mut entries = vec![entry("ripgrep", 5, Source::Homebrew)];
+        entries.push(entry("com.apple.pkg.Foo", 0, Source::Pkgutil));
+        let mut a = App::new((entries, None)).0;
+
+        assert_eq!(names(&a), ["ripgrep"], "pkgutil hidden by default");
+        assert_eq!(a.hidden_noise(), 1);
+
+        send(&mut a, Message::ToggleNoise);
+        assert_eq!(names(&a), ["com.apple.pkg.Foo", "ripgrep"]);
+        assert_eq!(a.hidden_noise(), 0, "nothing withheld once shown");
+    }
+
+    /// The idle view keeps only units with no evidence of use, and composes
+    /// with the search filter rather than replacing it.
+    #[test]
+    fn idle_view_filters_and_composes_with_search() {
+        let mut used = entry("ripgrep", 500, Source::Homebrew);
+        used.name = "ripgrep".into();
+        let unused_a = entry("abandoned-tool", 0, Source::Homebrew);
+        let unused_b = entry("another-dead-app", 0, Source::Cargo);
+        let mut a = App::new((vec![used, unused_a, unused_b], None)).0;
+
+        assert_eq!(names(&a).len(), 3);
+        send(&mut a, Message::ToggleIdleOnly);
+        assert_eq!(names(&a), ["abandoned-tool", "another-dead-app"]);
+
+        // Search still applies on top of the idle filter.
+        send(&mut a, Message::SearchOpen);
+        for c in "another".chars() {
+            send(&mut a, Message::SearchPush(c));
+        }
+        assert_eq!(names(&a), ["another-dead-app"]);
+
+        send(&mut a, Message::ToggleIdleOnly);
+        assert_eq!(names(&a), ["another-dead-app"], "search survives the toggle");
+    }
+
+    /// A recently-opened GUI app is not idle even with zero shell invocations.
+    #[test]
+    fn recently_opened_app_is_not_idle() {
+        let mut recent = entry("Zed", 0, Source::Applications);
+        recent.last_used = Some(chrono::Local::now() - chrono::Duration::days(3));
+        let mut a = App::new((vec![recent], None)).0;
+
+        send(&mut a, Message::ToggleIdleOnly);
+        assert!(a.rows.is_empty(), "recently used app must not be listed as idle");
     }
 
     #[test]

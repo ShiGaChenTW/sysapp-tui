@@ -116,5 +116,10 @@ pub enum Message {
     /// Spinner animation frame — only subscribed to while a rescan is running.
     Tick,
 
+    /// Show/hide packaging noise (pkgutil receipts, `/System/` apps).
+    ToggleNoise,
+    /// Show only units with no evidence of use.
+    ToggleIdleOnly,
+
     Quit,
 }

@@ -25,6 +25,8 @@ pub struct HeaderBar<'a> {
     pub sort_asc: bool,
     pub query: &'a str,
     pub generated_at: Option<DateTime<Local>>,
+    pub hidden_noise: usize,
+    pub idle_only: bool,
 }
 
 impl HeaderBar<'_> {
@@ -97,6 +99,19 @@ impl HeaderBar<'_> {
             spans.push(Span::styled("  [ FILTER ]", theme.accented()));
             spans.push(Span::styled(
                 format!(" \"{}\" ", self.query.to_uppercase()),
+                theme.heading(),
+            ));
+        }
+
+        // Any active view filter is announced, so INVENTORY and SHOWN never
+        // disagree for a reason the user cannot see.
+        if self.idle_only {
+            spans.push(Span::styled("  [ IDLE ONLY ]", theme.accented()));
+        }
+        if self.hidden_noise > 0 {
+            spans.push(Span::styled("  [ HIDDEN ]", theme.accented()));
+            spans.push(Span::styled(
+                format!(" {} NOISE ", self.hidden_noise),
                 theme.heading(),
             ));
         }
