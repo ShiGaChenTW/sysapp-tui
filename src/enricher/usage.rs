@@ -97,15 +97,28 @@ async fn batch_mdls(
         let path = path.clone();
         let idx = *idx;
         set.spawn(async move {
-            let _permit = sem.acquire().await.unwrap();
+            // Semaphore is never closed, so this cannot fail; tolerate it anyway
+        // rather than panicking a task and losing its result.
+        let _permit = sem.acquire().await.ok();
             let (last_used, count) = query_mdls(&path).await;
             (idx, last_used, count)
         });
     }
 
     let mut results = Vec::new();
-    while let Some(Ok(result)) = set.join_next().await {
-        results.push(result);
+    // `join_next` yields `Some(Err(_))` for a panicked or cancelled task. A
+    // `while let Some(Ok(..))` pattern would stop the loop there and silently
+    // drop every task not yet joined — those entries would keep a zero usage
+    // count and no last-used date, which makes `is_idle()` report actively
+    // used applications as abandoned. Skip the failed task, keep draining.
+    while let Some(joined) = set.join_next().await {
+        // Nothing is written to stderr here: the TUI holds the alternate
+        // screen for the whole scan, so any output would paint over the live
+        // frame. A dropped task just leaves that one entry without usage data,
+        // which is the same state as an `mdls` query returning nothing.
+        if let Ok(result) = joined {
+            results.push(result);
+        }
     }
     results
 }

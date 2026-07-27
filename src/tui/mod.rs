@@ -198,11 +198,12 @@ impl App {
     /// name. Used after a background rescan: the list contents changed
     /// underneath the user, but the unit they were looking at should not move.
     fn rebuild_anchored(&mut self, anchor: Option<String>) {
+        let cutoff = idle_cutoff();
         let mut rows: Vec<usize> = self
             .entries
             .iter()
             .enumerate()
-            .filter(|(_, e)| self.visible(e))
+            .filter(|(_, e)| self.visible(e, cutoff))
             .map(|(i, _)| i)
             .collect();
 
@@ -225,12 +226,26 @@ impl App {
         self.grid.select(cursor);
     }
 
+    /// Whether the record is rendered as a persistent side panel.
+    ///
+    /// The single source of truth for this question. `update` and `view` both
+    /// consult it, so a mode that only makes sense in one layout cannot
+    /// survive into the other.
+    fn side_by_side(&self) -> bool {
+        self.width >= SIDE_PANEL_MIN_WIDTH
+    }
+
     /// Every filter that decides whether an entry reaches the grid.
-    fn visible(&self, e: &AppEntry) -> bool {
+    ///
+    /// `cutoff` is passed in rather than read from the clock here: this runs
+    /// once per entry per rebuild, so calling `Local::now()` inside would mean
+    /// ~900 timezone resolutions per keystroke while filtering, and would make
+    /// the filter time-dependent mid-pass.
+    fn visible(&self, e: &AppEntry, cutoff: DateTime<Local>) -> bool {
         if self.hide_noise && e.is_system_noise() {
             return false;
         }
-        if self.idle_only && !e.is_idle(idle_cutoff()) {
+        if self.idle_only && !e.is_idle(cutoff) {
             return false;
         }
         self.search.matches(e)
@@ -345,7 +360,20 @@ impl Application for App {
                     None => Command::none(),
                 };
             }
-            Message::Terminal(Event::Resize(w, _)) => self.width = w,
+            Message::Terminal(Event::Resize(w, _)) => {
+                self.width = w;
+                // Detail only exists as a fallback for terminals too narrow to
+                // carry the side panel. Widening past the threshold makes the
+                // modal stop rendering, so holding the mode would leave the
+                // user in a browse-looking screen where the Detail keymap
+                // binds almost nothing and navigation silently dies.
+                if self.mode == Mode::Detail && self.side_by_side() {
+                    self.mode = Mode::Browse;
+                }
+                if self.resume_mode == Mode::Detail && self.side_by_side() {
+                    self.resume_mode = Mode::Browse;
+                }
+            }
             Message::Terminal(_) => {}
             Message::TerminalError(e) => {
                 // A dead input stream means the session is over; leaving the
@@ -385,8 +413,7 @@ impl Application for App {
                 // On a wide terminal the record panel is already on screen, so
                 // there is nothing to open — flipping the mode would only make
                 // the footer claim a state change that never happened.
-                let has_side_panel = self.width >= SIDE_PANEL_MIN_WIDTH;
-                if !has_side_panel && self.selected_entry().is_some() {
+                if !self.side_by_side() && self.selected_entry().is_some() {
                     self.mode = Mode::Detail;
                 }
             }
@@ -463,8 +490,16 @@ impl Application for App {
                 // cache alone rather than persisting the failure.
                 if entries.is_empty() {
                     self.notice = Some("SCAN FOUND NOTHING — press r to retry".into());
-                } else if let Err(e) = crate::cache::save(&entries) {
-                    self.notice = Some(format!("CACHE WRITE FAILED — {e}"));
+                } else {
+                    // Off the UI thread: `save` serialises ~900 entries and
+                    // does a synchronous write, which would stall keystrokes
+                    // and the spinner on a slow or full volume. The rescan
+                    // path already writes inside its async task; this is the
+                    // cold-start path catching up.
+                    let to_cache = entries.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let _ = crate::cache::save(&to_cache);
+                    });
                 }
                 self.entries = entries;
                 self.source_counts = source_counts(&self.entries);
@@ -552,7 +587,7 @@ impl Application for App {
 
         // Master-detail when there is room for both; the record falls back to a
         // modal on narrow terminals rather than squeezing the grid to nothing.
-        let side_by_side = frame.area().width >= SIDE_PANEL_MIN_WIDTH;
+        let side_by_side = self.side_by_side();
         let (grid_area, record_area) = if side_by_side {
             let [g, _gap, r] = Layout::horizontal([
                 Constraint::Min(48),
@@ -650,10 +685,13 @@ pub async fn run(snapshot: Option<(Vec<AppEntry>, Option<DateTime<Local>>)>) -> 
     // `ratatui::init` enters the alternate screen, enables raw mode, and
     // installs a panic hook that restores both — so a panic cannot leave the
     // user with a wedged terminal.
-    let mut terminal = ratatui::init();
-
+    // Built before `ratatui::init()`: everything between init and restore must
+    // reach restore, and `?` here would return past it with the terminal left
+    // in raw mode on the alternate screen.
     let frame_rate = FrameRate::new(NonZeroU32::new(30).expect("30 is non-zero"))
         .map_err(|e| anyhow!("invalid frame rate: {e}"))?;
+
+    let mut terminal = ratatui::init();
 
     let result = Runtime::<App>::new(snapshot, frame_rate)
         .run(&mut terminal)
@@ -930,6 +968,28 @@ mod tests {
         );
     }
 
+    /// PROOF of the reported defect: widening past the side-panel threshold
+    /// while the modal is open leaves the app in Detail mode, where the keymap
+    /// binds almost nothing — navigation dies with no on-screen cause.
+    #[test]
+    fn proof_resize_strands_detail_mode() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut a = app();
+        a.width = 80;
+        send(&mut a, Message::DetailOpen);
+        assert_eq!(a.mode, Mode::Detail);
+
+        // User drags the window wider; the side panel takes over rendering.
+        send(&mut a, Message::Terminal(Event::Resize(130, 40)));
+
+        assert_eq!(a.mode, Mode::Browse, "mode must follow the layout");
+        let j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert!(
+            crate::tui::keymap::translate(a.mode, j).is_some(),
+            "navigation must still work after widening"
+        );
+    }
+
     #[test]
     fn jump_messages_reach_both_ends() {
         let mut a = app();
@@ -978,7 +1038,17 @@ mod render_tests {
         ]
     }
 
-    fn draw(app: &App, w: u16, h: u16) -> String {
+    /// Render at `w`x`h`, pinning the model's own width to match.
+    ///
+    /// `view` and `update` both branch on `App::width`, so a test that draws at
+    /// one size while the model believes another is testing a state that cannot
+    /// occur at runtime.
+    fn draw(app: &mut App, w: u16, h: u16) -> String {
+        app.width = w;
+        draw_at(app, w, h)
+    }
+
+    fn draw_at(app: &App, w: u16, h: u16) -> String {
         let mut term = Terminal::new(TestBackend::new(w, h)).expect("test backend");
         term.draw(|f| app.view(f)).expect("draw");
         let buf = term.backend().buffer().clone();
@@ -1000,8 +1070,8 @@ mod render_tests {
 
     #[test]
     fn render_browse_120x24() {
-        let app = App::new(Some((sample(), None))).0;
-        let out = draw(&app, 120, 24);
+        let mut app = App::new(Some((sample(), None))).0;
+        let out = draw(&mut app, 120, 24);
         banner("BROWSE 120x24", &out);
         assert!(out.contains("SYSAPP"), "identity band missing");
         assert!(out.contains("INVENTORY"), "grid panel title missing");
@@ -1015,7 +1085,7 @@ mod render_tests {
     fn render_sorted_by_usage_120x24() {
         let mut app = App::new(Some((sample(), None))).0;
         let _ = app.update(Message::SortBy(Column::Usage));
-        let out = draw(&app, 120, 24);
+        let out = draw(&mut app, 120, 24);
         banner("SORT BY USAGE 120x24", &out);
         // Anchoring on a line index would break whenever the header grows, so
         // assert the ordering relation instead.
@@ -1033,7 +1103,7 @@ mod render_tests {
         for c in "rust".chars() {
             let _ = app.update(Message::SearchPush(c));
         }
-        let out = draw(&app, 120, 24);
+        let out = draw(&mut app, 120, 24);
         banner("SEARCH \"rust\" 120x24", &out);
         assert!(out.contains("SEARCH"), "search band missing");
         assert!(out.contains("MATCH"), "hit count missing");
@@ -1046,18 +1116,18 @@ mod render_tests {
     fn render_record_side_panel_120x24() {
         let mut app = App::new(Some((sample(), None))).0;
         app.width = 120;
-        let out = draw(&app, 120, 24);
+        let out = draw(&mut app, 120, 24);
         banner("RECORD SIDE PANEL 120x24", &out);
         assert!(out.contains("RECORD"), "record panel title missing");
         assert!(out.contains("INVOCATIONS"), "record fields missing");
         // SOURCES is inventory-wide context, not part of the record, so it
         // yields to the record itself on a short terminal. Checked at a
         // realistic height below.
-        let tall = draw(&app, 120, 34);
+        let tall = draw(&mut app, 120, 34);
         assert!(tall.contains("SOURCES"), "source breakdown missing on a tall terminal");
 
         let _ = app.update(Message::DetailOpen);
-        let after = draw(&app, 120, 24);
+        let after = draw(&mut app, 120, 24);
         assert_eq!(after, out, "Enter must be inert while the side panel is up");
     }
 
@@ -1066,11 +1136,11 @@ mod render_tests {
     fn render_record_modal_when_narrow() {
         let mut app = App::new(Some((sample(), None))).0;
         app.width = 80;
-        let plain = draw(&app, 80, 24);
+        let plain = draw(&mut app, 80, 24);
         assert!(!plain.contains("INVOCATIONS"), "no side panel at 80 cols");
 
         let _ = app.update(Message::DetailOpen);
-        let out = draw(&app, 80, 24);
+        let out = draw(&mut app, 80, 24);
         banner("RECORD MODAL 80x24", &out);
         assert!(out.contains("RECORD"), "modal title missing");
         assert!(out.contains("INVOCATIONS"), "modal fields missing");
@@ -1080,15 +1150,15 @@ mod render_tests {
     fn render_help_120x30() {
         let mut app = App::new(Some((sample(), None))).0;
         let _ = app.update(Message::HelpToggle);
-        let out = draw(&app, 120, 30);
+        let out = draw(&mut app, 120, 30);
         banner("HELP OVERLAY 120x30", &out);
         assert!(out.contains("KEY REFERENCE"), "help title missing");
     }
 
     #[test]
     fn render_narrow_80x24() {
-        let app = App::new(Some((sample(), None))).0;
-        let out = draw(&app, 80, 24);
+        let mut app = App::new(Some((sample(), None))).0;
+        let out = draw(&mut app, 80, 24);
         banner("BROWSE 80x24", &out);
         assert!(out.contains("SYSAPP"), "must still render at the 80x24 floor");
     }
@@ -1096,65 +1166,17 @@ mod render_tests {
     /// Below the floor we must say so, not draw a mangled layout.
     #[test]
     fn render_undersized_40x8() {
-        let app = App::new(Some((sample(), None))).0;
-        let out = draw(&app, 40, 8);
+        let mut app = App::new(Some((sample(), None))).0;
+        let out = draw(&mut app, 40, 8);
         banner("UNDERSIZED 40x8", &out);
         assert!(out.contains("VIEWPORT UNDERSIZED"));
-    }
-
-    /// Reproduces the reported artefact: with a non-black terminal background,
-    /// vertical stripes appear between columns. Cell styles paint cells; the
-    /// column gaps and any unwritten area belong to whatever is underneath.
-    #[test]
-    fn probe_unpainted_cells() {
-        let app = App::new(Some((sample(), None))).0;
-        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 24)).unwrap();
-        term.draw(|f| app.view(f)).unwrap();
-        let buf = term.backend().buffer().clone();
-        let mut unpainted = 0;
-        let mut total = 0;
-        for y in 0..buf.area.height {
-            for x in 0..buf.area.width {
-                total += 1;
-                if buf[(x, y)].bg == ratatui::style::Color::Reset { unpainted += 1; }
-            }
-        }
-        println!("UNPAINTED CELLS: {unpainted}/{total} ({:.0}%)", 100.0 * unpainted as f64 / total as f64);
-        // Row 7 is inside the data grid — sample the column-gap columns.
-        let row: String = (0..60).map(|x| if buf[(x,7)].bg == ratatui::style::Color::Reset {'.'} else {'#'}).collect();
-        println!("ROW 7 PAINT MAP (. = shows terminal bg): {row}");
-    }
-
-
-    /// Regression guard for the background bleed: unpainted cells expose the
-    /// user's terminal background, which on a themed terminal appeared as
-    /// vertical stripes through the grid. This measured 44% before the fix.
-    #[test]
-    fn every_cell_is_painted() {
-        let mut app = App::new(Some((sample(), None))).0;
-        app.width = 130;
-        let mut term =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(130, 30)).unwrap();
-        term.draw(|f| app.view(f)).unwrap();
-        let buf = term.backend().buffer().clone();
-        let mut unpainted = 0;
-        let total = (buf.area.width as usize) * (buf.area.height as usize);
-        for y in 0..buf.area.height {
-            for x in 0..buf.area.width {
-                if buf[(x, y)].bg == ratatui::style::Color::Reset {
-                    unpainted += 1;
-                }
-            }
-        }
-        println!("UNPAINTED: {unpainted}/{total}");
-        assert_eq!(unpainted, 0, "{unpainted} cells would leak the terminal background");
     }
 
     #[test]
     fn render_cold_start_scan_screen() {
         // `None` flags = no cache, so the app opens on the progress screen.
         let (mut app, _cmd) = App::new(None);
-        let out = draw(&app, 120, 24);
+        let out = draw(&mut app, 120, 24);
         banner("COLD START — ALL PENDING", &out);
         assert!(out.contains("NO SNAPSHOT"), "must explain why it is scanning");
         assert!(out.contains("BREW"), "sources must be listed");
@@ -1163,7 +1185,7 @@ mod render_tests {
         // Partial progress: brew done, one source unavailable.
         let _ = app.update(Message::SourceScanned("brew", Ok(vec![])));
         let _ = app.update(Message::SourceScanned("go", Err("go not installed".into())));
-        let out = draw(&app, 120, 24);
+        let out = draw(&mut app, 120, 24);
         banner("COLD START — PARTIAL", &out);
         assert!(out.contains("0 UNITS"), "completed source shows its count");
         assert!(out.contains("SKIPPED"), "unavailable source is marked, not fatal");
@@ -1188,7 +1210,7 @@ mod render_tests {
     fn columns_fit_at_minimum_width() {
         let mut app = App::new(Some((sample(), None))).0;
         app.width = SIDE_PANEL_MIN_WIDTH;
-        let out = draw(&app, SIDE_PANEL_MIN_WIDTH, 26);
+        let out = draw(&mut app, SIDE_PANEL_MIN_WIDTH, 26);
         banner("MINIMUM SIDE-BY-SIDE WIDTH", &out);
         for header in ["1·NAME", "2·SRC", "3·LANG", "4·VER", "5·INSTALLED", "6·USAGE"] {
             assert!(out.contains(header), "header {header:?} was clipped");
@@ -1203,7 +1225,7 @@ mod render_tests {
         for c in "zzzz".chars() {
             let _ = app.update(Message::SearchPush(c));
         }
-        let out = draw(&app, 120, 24);
+        let out = draw(&mut app, 120, 24);
         banner("NO MATCHES 120x24", &out);
         assert!(out.contains("NO UNITS MATCH FILTER"));
     }

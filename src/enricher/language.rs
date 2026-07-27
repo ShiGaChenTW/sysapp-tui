@@ -118,14 +118,14 @@ async fn detect_app_language(path: Option<&str>) -> Option<Language> {
 
     // Swift (bundled runtime)
     let frameworks = app.join("Contents/Frameworks");
-    if frameworks.exists() {
-        if let Ok(mut dir) = tokio::fs::read_dir(&frameworks).await {
-            while let Ok(Some(entry)) = dir.next_entry().await {
-                let name = entry.file_name();
-                let s = name.to_string_lossy();
-                if s.starts_with("libswift") && s.ends_with(".dylib") {
-                    return Some(Language::Swift);
-                }
+    if frameworks.exists()
+        && let Ok(mut dir) = tokio::fs::read_dir(&frameworks).await
+    {
+        while let Ok(Some(entry)) = dir.next_entry().await {
+            let name = entry.file_name();
+            let s = name.to_string_lossy();
+            if s.starts_with("libswift") && s.ends_with(".dylib") {
+                return Some(Language::Swift);
             }
         }
     }
