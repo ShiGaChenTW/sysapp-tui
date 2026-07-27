@@ -62,7 +62,21 @@ const SPINNER_INTERVAL_MS: u64 = 120;
 
 /// Below this the grid and the record panel cannot both be legible, so the
 /// record falls back to a modal.
-const SIDE_PANEL_MIN_WIDTH: u16 = 96;
+const SIDE_PANEL_MIN_WIDTH: u16 = 116;
+
+/// Breathing room between the interface and the terminal edge. Content that
+/// runs to the very edge of the window reads as cramped and makes the panel
+/// borders fight the terminal's own frame.
+const MARGIN_X: u16 = 2;
+const MARGIN_Y: u16 = 1;
+
+/// Gap between the inventory and record panels, so their borders do not touch.
+const PANEL_GAP: u16 = 1;
+
+/// Fixed width of the record panel. The grid takes whatever remains, so this
+/// and `SIDE_PANEL_MIN_WIDTH` together set the grid's minimum content budget —
+/// see the column widths in `components::table`.
+const RECORD_PANEL_WIDTH: u16 = 36;
 
 /// How long without use before a unit counts as idle. Six months is long
 /// enough to survive a quarter of neglect but short enough to still flag
@@ -511,7 +525,16 @@ impl Application for App {
         // cover only the cells they write; column gaps, panel padding and short
         // rows would otherwise expose the user's terminal background — which on
         // a themed terminal shows up as vertical stripes through the grid.
+        // Painting the full area (not the inset one) also fills the margin.
         frame.render_widget(Block::default().style(self.theme.base()), area);
+
+        // Inset everything from the terminal edge.
+        let area = Rect {
+            x: area.x + MARGIN_X,
+            y: area.y + MARGIN_Y,
+            width: area.width.saturating_sub(MARGIN_X * 2),
+            height: area.height.saturating_sub(MARGIN_Y * 2),
+        };
 
         let [head, body, foot] = Layout::vertical([
             Constraint::Length(header::HEIGHT),
@@ -529,10 +552,14 @@ impl Application for App {
 
         // Master-detail when there is room for both; the record falls back to a
         // modal on narrow terminals rather than squeezing the grid to nothing.
-        let side_by_side = area.width >= SIDE_PANEL_MIN_WIDTH;
+        let side_by_side = frame.area().width >= SIDE_PANEL_MIN_WIDTH;
         let (grid_area, record_area) = if side_by_side {
-            let [g, r] =
-                Layout::horizontal([Constraint::Min(48), Constraint::Length(38)]).areas(body);
+            let [g, _gap, r] = Layout::horizontal([
+                Constraint::Min(48),
+                Constraint::Length(PANEL_GAP),
+                Constraint::Length(RECORD_PANEL_WIDTH),
+            ])
+            .areas(body);
             (g, Some(r))
         } else {
             (body, None)
@@ -999,7 +1026,11 @@ mod render_tests {
         banner("RECORD SIDE PANEL 120x24", &out);
         assert!(out.contains("RECORD"), "record panel title missing");
         assert!(out.contains("INVOCATIONS"), "record fields missing");
-        assert!(out.contains("SOURCES"), "source breakdown missing");
+        // SOURCES is inventory-wide context, not part of the record, so it
+        // yields to the record itself on a short terminal. Checked at a
+        // realistic height below.
+        let tall = draw(&app, 120, 34);
+        assert!(tall.contains("SOURCES"), "source breakdown missing on a tall terminal");
 
         let _ = app.update(Message::DetailOpen);
         let after = draw(&app, 120, 24);
@@ -1100,6 +1131,20 @@ mod render_tests {
         // All reported (all failed) → enrichment still runs and completes.
         let _ = app.update(Message::EnrichDone(vec![]));
         assert!(app.scan.is_none(), "scan screen must clear even if every source failed");
+    }
+
+    /// Column widths must fit the grid panel at the narrowest side-by-side
+    /// layout. Overflow makes ratatui clip the rightmost headers silently —
+    /// which shipped twice as `5·INSTALLE`.
+    #[test]
+    fn columns_fit_at_minimum_width() {
+        let mut app = App::new(Some((sample(), None))).0;
+        app.width = SIDE_PANEL_MIN_WIDTH;
+        let out = draw(&app, SIDE_PANEL_MIN_WIDTH, 26);
+        banner("MINIMUM SIDE-BY-SIDE WIDTH", &out);
+        for header in ["1·NAME", "2·SRC", "3·LANG", "4·VER", "5·INSTALLED", "6·USAGE"] {
+            assert!(out.contains(header), "header {header:?} was clipped");
+        }
     }
 
     /// Every frame must survive an empty result set without panicking.

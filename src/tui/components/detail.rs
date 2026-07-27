@@ -8,7 +8,7 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::model::AppEntry;
@@ -28,6 +28,7 @@ impl DetailPanel<'_> {
             .border_type(BorderType::Plain)
             .border_style(theme.panel_border())
             .title(Span::styled(" RECORD ", theme.panel_title()))
+            .padding(Padding::new(1, 1, 1, 0))
             .style(theme.base());
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -37,10 +38,11 @@ impl DetailPanel<'_> {
             None => vec![Line::from(Span::styled(" No unit selected", theme.muted()))],
         };
 
-        if !self.sources.is_empty() && inner.height as usize > lines.len() + 4 {
+        if !self.sources.is_empty() && inner.height as usize > lines.len() + 2 {
             lines.push(Line::from(Span::styled("", theme.base())));
             lines.push(section("SOURCES", theme));
-            for (name, n) in self.sources {
+            let room = (inner.height as usize).saturating_sub(lines.len());
+            for (name, n) in self.sources.iter().take(room) {
                 lines.push(Line::from(vec![
                     Span::styled(format!("   {name:<10}"), theme.muted()),
                     Span::styled(format!("{n}"), theme.base()),
@@ -74,6 +76,7 @@ impl DetailPanel<'_> {
             .border_type(BorderType::Plain)
             .border_style(theme.accented())
             .title(Span::styled(" RECORD ", theme.panel_title()))
+            .padding(Padding::new(1, 1, 1, 1))
             .style(theme.overlay());
 
         frame.render_widget(Clear, rect);

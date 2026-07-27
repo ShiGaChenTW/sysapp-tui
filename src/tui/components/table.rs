@@ -10,7 +10,7 @@ use std::cmp::Ordering;
 use ratatui::Frame;
 use ratatui::text::{Line, Span};
 use ratatui::layout::{Constraint as C, Layout, Rect};
-use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{Block, BorderType, Borders, Cell, Padding, Paragraph, Row, Table, TableState};
 
 use unicode_width::UnicodeWidthStr;
 
@@ -93,6 +93,7 @@ impl DataGrid {
             .border_type(BorderType::Plain)
             .border_style(theme.panel_border())
             .title(Span::styled(" INVENTORY ", theme.panel_title()))
+            .padding(Padding::new(1, 1, 1, 0))
             .style(theme.base());
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -123,17 +124,20 @@ impl DataGrid {
         // PATH is dropped from the grid: it is long, almost always elided, and
         // shown in full in the record panel. Its screen budget buys legible
         // columns for the fields that fit.
-        // Budget at the narrowest supported layout (96 cols): panel inner is
-        // 78 - 1 highlight symbol - 5 inter-column gaps = 72 for content.
-        // Fixed columns take 51, leaving 21 for NAME; anything more and
-        // ratatui silently clips the rightmost headers.
+        // Budget at the narrowest side-by-side layout (116 cols):
+        //   116 - 4 outer margin - 1 panel gap - 36 record = 75 grid
+        //   75 - 2 border - 2 padding = 71 inner
+        //   71 - 1 highlight symbol - 5 inter-column gaps = 65 content
+        // The fixed columns take 48, leaving 17 for NAME. Exceed the budget
+        // and ratatui silently clips the rightmost headers instead of
+        // reporting anything — `columns_fit_at_minimum_width` guards it.
         let widths = [
-            C::Min(18),      // NAME
-            C::Length(8),    // SRC        — "PKGUTIL" is the longest value
-            C::Length(11),   // LANG       — "JavaScript"
-            C::Length(11),   // VER
-            C::Length(11),   // INSTALLED  — "5·INSTALLED" header is 11
-            C::Length(10),   // USAGE      — "6·USAGE▼" header is 8
+            C::Min(14),      // NAME
+            C::Length(7),    // SRC        — "PKGUTIL"
+            C::Length(10),   // LANG       — "JavaScript"
+            C::Length(10),   // VER
+            C::Length(11),   // INSTALLED  — the "5·INSTALLED" header itself
+            C::Length(10),   // USAGE      — the "2026-07-20" fallback value
         ];
 
         let header = Row::new(
