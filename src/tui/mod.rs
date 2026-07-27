@@ -1124,13 +1124,19 @@ mod render_tests {
         ]
     }
 
-    /// Render at `w`x`h`, pinning the model's own width to match.
+    /// Render at `w`x`h`, pinning everything the model reads from the
+    /// environment.
     ///
-    /// `view` and `update` both branch on `App::width`, so a test that draws at
-    /// one size while the model believes another is testing a state that cannot
-    /// occur at runtime.
+    /// Two things leak in and both have now broken CI: `App::width` is seeded
+    /// from `crossterm::terminal::size()`, and `Theme::detect()` reads
+    /// COLORTERM/TERM/NO_COLOR — a headless runner gets the 16-colour palette,
+    /// so any assertion about a specific colour passes locally and fails
+    /// there. Pinning both here covers every render test at once rather than
+    /// waiting for each to be caught individually.
     fn draw(app: &mut App, w: u16, h: u16) -> String {
         app.width = w;
+        app.theme = Theme::tactical();
+        app.lang = Lang::En;
         draw_at(app, w, h)
     }
 
@@ -1342,12 +1348,15 @@ mod render_tests {
         use ratatui::style::Color;
         let mut app = App::new(Some((sample(), None))).0;
         app.width = 130;
+        app.theme = Theme::tactical();
         let mut term =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(130, 30)).unwrap();
         term.draw(|f| app.view(f)).unwrap();
         let buf = term.backend().buffer().clone();
 
-        let band = Color::Rgb(0x6E, 0x0D, 0x10);
+        // Read from the theme rather than repeating the literal, so retuning
+        // the palette does not silently invalidate the test.
+        let band = app.theme.band;
         // The band is inset by the outer margin, so it spans the content
         // columns rather than the full frame — the margin cells stay base.
         let inner = MARGIN_X..(buf.area.width - MARGIN_X);
@@ -1369,9 +1378,15 @@ mod render_tests {
         let title_x = text.find("SYSAPP").unwrap() as u16;
         assert_eq!(
             buf[(title_x, title_row)].fg,
-            Color::Rgb(0xFF, 0xFF, 0xFF),
-            "title must be white on the band"
+            app.theme.fg_on_band,
+            "title must use the band's foreground"
         );
+        assert_eq!(
+            app.theme.fg_on_band,
+            Color::Rgb(0xFF, 0xFF, 0xFF),
+            "the band foreground is white"
+        );
+        assert_eq!(app.theme.band, Color::Rgb(0x6E, 0x0D, 0x10), "deep red field");
         // Padding rows carry the field but no text.
         for &y in [band_rows[0], band_rows[4]].iter() {
             let row: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
