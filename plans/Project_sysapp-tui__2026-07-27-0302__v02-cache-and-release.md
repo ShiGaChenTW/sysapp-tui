@@ -1,8 +1,8 @@
 # sysapp-tui V0.2 — 快取秒開、背景重掃、發布
 
 **建立時間：** 2026-07-27 03:02
-**最後更新：** 2026-07-27 03:58
-**狀態：** 阻塞
+**最後更新：** 2026-07-27 08:40
+**狀態：** 已完成
 
 ## 目標
 
@@ -34,7 +34,7 @@ brew 只呼叫一次就同時取得 formula 與 cask）。純粹是 `brew info` 
 - [x] Step 5 — SCO-233 背景重掃 + `r` 鍵，不阻塞任何按鍵
 - [x] Step 6 — SCO-230 pkgutil 雜訊過濾開關
 - [x] Step 7 — SCO-235 閒置檢視（僅依使用頻率與時間，不含 size）
-- [ ] Step 8 — SCO-236 Homebrew tap 釋出 v0.2.0（**阻塞：repo 需轉 public**）
+- [x] Step 8 — SCO-236 Homebrew tap 釋出 v0.2.0
 - [x] Step 9 — 全數測試 + clippy + 實機 pty 驗證
 - [x] Step 10 — commit + push + Linear 卡片轉 Done
 
@@ -48,9 +48,9 @@ brew 只呼叫一次就同時取得 formula 與 cask）。純粹是 `brew info` 
 
 ## 阻塞 / 待決議
 
-- **SCO-236 卡在 repo 可見性**：`ShiGaChenTW/sysapp-tui` 目前是 private，
-  Homebrew tap 無法從私有 repo 安裝。轉公開是不可逆的對外動作，等 Scott 決定。
-  解除後只剩三步：repo 轉 public → 建 homebrew-tap repo → 打 tag 取 sha256。
+無。repo 已於 08:29 由 Scott 轉為 public 並推 tag（權限分類器擋下我執行這兩個
+指令，未繞過）。tap 早已存在，formula 以新增方式加入，未動到既有的
+ghostty-config-studio 與 txtnimal。
 
 ## 結束摘要
 
@@ -62,7 +62,7 @@ brew 只呼叫一次就同時取得 formula 與 cask）。純粹是 `brew info` 
 | 冷啟動首次繪製 | 89 秒空白終端機 | **0.01s**（進度畫面） |
 | 冷啟動到可用 | 88.9s | 6.4s（brew 暖快取時） |
 
-**完成的卡**（5/6）
+**完成的卡**（6/6）
 
 - SCO-232 快取層 — `~/Library/Caches/sysapp-tui/`，schema 版本化，
   temp-file + rename 原子寫入，損毀／版本不符／缺檔皆退回掃描不 panic
@@ -71,7 +71,7 @@ brew 只呼叫一次就同時取得 formula 與 cask）。純粹是 `brew info` 
 - SCO-230 雜訊過濾 `p` — 906 筆中 402 筆是 pkgutil 收據與 `/System/` 元件（44%），預設隱藏
 - SCO-235 閒置檢視 `s` — 零呼叫且近期未開啟，與搜尋、雜訊過濾可疊加
 - SCO-234 冷啟動進度畫面 — 每個來源獨立回報，brew 標示為最慢來源
-- SCO-236 發布 — 程式碼側完成（workflow + formula + 文件），卡在 repo 可見性
+- SCO-236 發布 — `brew install ShiGaChenTW/tap/sysapp-tui` 實測可安裝
 
 **過程中修掉的自造回歸**
 
@@ -86,7 +86,20 @@ alternate screen 上（實測畫面出現 `detecting380 UNITS` 蓋掉 BREW 那�
 不是 scanner 的問題。這是整個工具最嚴重的資料完整性缺口，
 也直接削弱閒置檢視的價值——已列 V0.3 urgent。
 
+**發布驗證（非僅看 workflow 綠燈）**
+
+- sha256 未直接抄 build log，自行下載兩個 tarball 用 `shasum -a 256` 重算，一致
+- 解開 release tarball 直接執行，確認 `Mach-O 64-bit executable arm64` 且回報 0.2.0
+- 完整 untap → tap → install 循環實測通過，`brew test` 通過
+- brew 安裝的 binary 實跑進 TUI，標頭 `REV 0.2.0`、906 筆、雜訊過濾生效
+
 **測試**
 
 36 → 54 個測試，`src/` 自有程式碼 clippy 零警告。
 所有效能數字皆為 release build 於真 pty 實測，非估算。
+
+**V0.3 待辦**
+
+- SCO-237（urgent）`/Applications` 底下 146 個 App 掃不到——最嚴重的資料缺口
+- SCO-231（low）render 效能基線
+- 未開卡：磁碟佔用欄位、動作鍵（複製路徑／開啟位置／顯示移除指令）
