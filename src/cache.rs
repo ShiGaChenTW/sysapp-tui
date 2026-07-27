@@ -25,7 +25,7 @@ use crate::tui::i18n::Lang;
 /// into the new type, and the user would see a confusing error instead of a
 /// rescan. On mismatch we silently discard and rescan — the data is a pure
 /// cache of the local system, so there is nothing to migrate or lose.
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -51,7 +51,14 @@ pub fn age_label(generated_at: DateTime<Local>, lang: Lang) -> String {
         s if s < 90 => t.just_now.into(),
         s if s < 3600 => format!("{}{}", s / 60, t.minutes_ago),
         s if s < 172_800 => format!("{}{}", s / 3600, t.hours_ago),
-        s => format!("{}{}", s / 86_400, t.days_ago),
+        // Beyond two months, days stop reading as a duration: the record panel
+        // was rendering "512D AGO" for software installed a year and a half
+        // ago, which nobody converts in their head. The tiers below are the
+        // coarse units a person actually uses, and the divisors are deliberate
+        // approximations — this answers "roughly how long", never "exactly".
+        s if s < 5_184_000 => format!("{}{}", s / 86_400, t.days_ago),
+        s if s < 63_072_000 => format!("{}{}", s / 2_592_000, t.months_ago),
+        s => format!("{}{}", s / 31_536_000, t.years_ago),
     }
 }
 
@@ -161,6 +168,8 @@ mod tests {
             usage_count: 7,
             path: Some("/opt/homebrew/bin/x".into()),
             description: None,
+            ui_kind: None,
+            category: None,
         }
     }
 
@@ -348,6 +357,17 @@ mod tests {
         assert_eq!(mk(600).age_label(), "10M AGO");
         assert_eq!(mk(7200).age_label(), "2H AGO");
         assert_eq!(mk(259_200).age_label(), "3D AGO");
+        // The record panel shows install dates, which are routinely months or
+        // years old. Days stopped scaling there: this is the tier that keeps
+        // "512D AGO" from ever reaching the screen again.
+        assert_eq!(mk(86_400 * 512).age_label(), "17MO AGO");
+        assert_eq!(mk(86_400 * 900).age_label(), "2Y AGO");
+
+        // Each boundary lands in the tier below it, not the one above.
+        assert!(mk(86_400 * 59).age_label().ends_with("D AGO"));
+        assert!(mk(86_400 * 61).age_label().ends_with("MO AGO"));
+        assert!(mk(86_400 * 729).age_label().ends_with("MO AGO"));
+        assert!(mk(86_400 * 731).age_label().ends_with("Y AGO"));
     }
 
     /// A clock that jumped backwards must not produce a negative age.

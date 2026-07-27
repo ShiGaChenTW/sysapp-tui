@@ -69,6 +69,111 @@ impl fmt::Display for Language {
     }
 }
 
+/// How the unit is driven: a window, a terminal full-screen interface, a
+/// one-shot command, a background daemon, or nothing runnable at all.
+///
+/// This is what decides whether Enter can launch something in the background
+/// (`Gui`) or has to hand the terminal over to it (`Tui`, `Cli`), so it is a
+/// behavioural classification, not a cosmetic label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum UiKind {
+    Gui,
+    Tui,
+    Cli,
+    Service,
+    Library,
+    Unknown,
+}
+
+impl fmt::Display for UiKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Gui => write!(f, "GUI"),
+            Self::Tui => write!(f, "TUI"),
+            Self::Cli => write!(f, "CLI"),
+            Self::Service => write!(f, "SVC"),
+            Self::Library => write!(f, "LIB"),
+            Self::Unknown => write!(f, "—"),
+        }
+    }
+}
+
+/// What the unit is *for*.
+///
+/// The built-in set is closed so it can be translated and ordered; `Custom`
+/// carries whatever name the user assigned, which is never translated because
+/// only they know what it means.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Category {
+    Development,
+    Media,
+    Productivity,
+    System,
+    Network,
+    Security,
+    Design,
+    Data,
+    Communication,
+    Gaming,
+    Uncategorized,
+    Custom(String),
+}
+
+impl Category {
+    /// Built-ins in display order. `Custom` values are appended after these,
+    /// sorted by name, wherever a full list is needed.
+    pub const BUILT_IN: [Category; 11] = [
+        Category::Development,
+        Category::Media,
+        Category::Productivity,
+        Category::System,
+        Category::Network,
+        Category::Security,
+        Category::Design,
+        Category::Data,
+        Category::Communication,
+        Category::Gaming,
+        Category::Uncategorized,
+    ];
+
+    /// Parse a user-supplied name. Anything that is not a built-in becomes a
+    /// `Custom` category rather than an error — the user is allowed to invent
+    /// names, and rejecting them would make the feature useless.
+    pub fn parse(s: &str) -> Self {
+        let key = s.trim();
+        Self::BUILT_IN
+            .iter()
+            .find(|c| c.key().eq_ignore_ascii_case(key))
+            .cloned()
+            .unwrap_or_else(|| Self::Custom(key.to_string()))
+    }
+
+    /// Stable, untranslated identifier — what gets written to the config file.
+    /// Display text is looked up per language in `tui::i18n`.
+    pub fn key(&self) -> &str {
+        match self {
+            Self::Development => "Development",
+            Self::Media => "Media",
+            Self::Productivity => "Productivity",
+            Self::System => "System",
+            Self::Network => "Network",
+            Self::Security => "Security",
+            Self::Design => "Design",
+            Self::Data => "Data",
+            Self::Communication => "Communication",
+            Self::Gaming => "Gaming",
+            Self::Uncategorized => "Uncategorized",
+            Self::Custom(name) => name,
+        }
+    }
+}
+
+impl fmt::Display for Category {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.key())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppEntry {
     pub name: String,
@@ -81,6 +186,12 @@ pub struct AppEntry {
     pub path: Option<String>,
     #[allow(dead_code)]
     pub description: Option<String>,
+    /// How it is driven. `None` until the interface enricher has run.
+    #[serde(default)]
+    pub ui_kind: Option<UiKind>,
+    /// What it is for. `None` until the category enricher has run.
+    #[serde(default)]
+    pub category: Option<Category>,
 }
 
 impl AppEntry {
@@ -126,6 +237,8 @@ mod tests {
             usage_count: usage,
             path: path.map(str::to_string),
             description: None,
+            ui_kind: None,
+            category: None,
         }
     }
 

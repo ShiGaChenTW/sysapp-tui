@@ -36,6 +36,8 @@ pub async fn scan() -> Result<Vec<AppEntry>> {
                 usage_count: 0,
                 path: None,
                 description: Some(pkg_id.trim().to_string()),
+                ui_kind: None,
+                category: None,
             }
         })
         .collect();

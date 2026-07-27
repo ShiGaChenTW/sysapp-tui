@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::tui::components::detail::centered;
-use crate::tui::i18n::Lang;
+use crate::tui::i18n::{self, Lang};
 use crate::tui::message::Column;
 use crate::tui::theme::Theme;
 
@@ -26,18 +26,23 @@ fn bindings(lang: Lang) -> Vec<(Option<&'static str>, &'static str)> {
         (Some("u / PgUp"), t.h_up_page),
         (Some("g / Home"), t.h_first),
         (Some("G / End"), t.h_last),
+        (None, t.h_run_section),
+        (Some("Enter"), t.h_run),
+        (Some("y / N"), t.h_confirm),
         (None, t.h_inspect),
-        (Some("Enter / i"), t.h_open_record),
+        (Some("i / Tab"), t.h_open_record),
         (Some("Esc"), t.h_close_overlay),
         (None, t.h_filter),
         (Some("/"), t.h_live_filter),
         (Some("Esc"), t.h_cancel_filter),
         (Some("Enter"), t.h_keep_filter),
         (None, t.h_sort),
-        (Some("1 … 6"), t.h_sort_col),
+        (Some("1 … 9"), t.h_sort_col),
         (None, t.h_view),
         (Some("p"), t.h_toggle_noise),
         (Some("s"), t.h_toggle_idle),
+        (Some("c"), t.h_cat_filter),
+        (Some("C"), t.h_cat_set),
         (None, t.h_data),
         (Some("r"), t.h_rescan),
         (None, t.h_session),
@@ -74,18 +79,26 @@ impl HelpOverlay {
         }
 
         lines.push(Line::from(Span::styled("", theme.base())));
-        lines.push(Line::from(vec![
-            Span::styled(format!("   {}  ", t.h_columns), theme.muted()),
-            Span::styled(
-                Column::ALL
-                    .iter()
-                    .enumerate()
-                    .map(|(i, c)| format!("{}·{}", i + 1, c.label(self.lang)))
-                    .collect::<Vec<_>>()
-                    .join("  "),
-                theme.base(),
-            ),
-        ]));
+        // Nine columns overrun the 62-column overlay on one line, so they wrap.
+        // The digit comes from the enumeration of `Column::ALL` itself, which is
+        // the same index `keymap` feeds to `from_index` — deriving it any other
+        // way lets the overlay advertise a key that sorts by something else.
+        let numbered: Vec<String> = Column::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format!("{}·{}", i + 1, c.label(self.lang)))
+            .collect();
+        for (row, chunk) in numbered.chunks(3).enumerate() {
+            lines.push(Line::from(vec![
+                // Padded by display width: `{:<12}` counts characters, so the
+                // CJK label would indent half as far as the English one.
+                Span::styled(
+                    format!("   {}", i18n::pad(if row == 0 { t.h_columns } else { "" }, 12)),
+                    theme.muted(),
+                ),
+                Span::styled(chunk.join("  "), theme.base()),
+            ]));
+        }
 
         let rect = centered(area, 62, lines.len() as u16 + 2);
         if rect.width < 24 || rect.height < 5 {

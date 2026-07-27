@@ -15,9 +15,40 @@ use ratatui::widgets::{Block, BorderType, Borders, Cell, Padding, Paragraph, Row
 use unicode_width::UnicodeWidthStr;
 
 use crate::model::AppEntry;
-use crate::tui::i18n::Lang;
+use crate::tui::i18n::{self, Lang};
 use crate::tui::message::Column;
 use crate::tui::theme::Theme;
+
+const COMPACT_COLUMNS: &[Column] = &[
+    Column::Name,
+    Column::Source,
+    Column::UiKind,
+    Column::Installed,
+    Column::Usage,
+];
+const MEDIUM_COLUMNS: &[Column] = &[
+    Column::Name,
+    Column::Source,
+    Column::UiKind,
+    Column::Installed,
+    Column::Usage,
+    Column::Category,
+    Column::LastUsed,
+];
+const FULL_COLUMNS: &[Column] = &[
+    Column::Name,
+    Column::Source,
+    Column::UiKind,
+    Column::Installed,
+    Column::Usage,
+    Column::Category,
+    Column::LastUsed,
+    Column::Lang,
+    Column::Version,
+];
+
+pub(crate) const MEDIUM_MIN_CONTENT_WIDTH: u16 = 74;
+pub(crate) const FULL_MIN_CONTENT_WIDTH: u16 = 96;
 
 pub struct DataGrid {
     state: RefCell<TableState>,
@@ -124,44 +155,51 @@ impl DataGrid {
             return;
         }
 
-        // PATH is dropped from the grid: it is long, almost always elided, and
-        // shown in full in the record panel. Its screen budget buys legible
-        // columns for the fields that fit.
-        // Budget at the narrowest side-by-side layout (116 cols):
-        //   116 - 4 outer margin - 1 panel gap - 36 record = 75 grid
-        //   75 - 2 border - 2 padding = 71 inner
-        //   71 - 1 highlight symbol - 5 inter-column gaps = 65 content
-        // The fixed columns take 49, leaving 16 for NAME. Exceed the budget
-        // and ratatui silently clips the rightmost headers instead of
-        // reporting anything — `columns_fit_at_minimum_width` guards it.
-        let widths = [
-            C::Min(14),      // NAME
-            C::Length(7),    // SRC        — "PKGUTIL"
-            C::Length(10),   // LANG       — "JavaScript"
-            C::Length(10),   // VER
-            C::Length(12),   // INSTALLED  — "5·INSTALLED▲" with the sort arrow
-            C::Length(10),   // USAGE      — the "2026-07-20" fallback value
-        ];
+        // Nine columns never fit at once, and ratatui answers an over-budget
+        // width by silently clipping the rightmost headers rather than
+        // reporting anything — which shipped twice as `5·INSTALLE`. So the set
+        // is chosen by width instead of fixed.
+        //
+        // Tiering reads the full table width handed to ratatui, not a post-gap
+        // remainder, which keeps the decision non-circular: the gap count
+        // depends on the column count, which is what we are choosing. Each tier
+        // costs `1 highlight + (n - 1) gaps + Σ width(col)`, with NAME
+        // contributing its `Min`. Measured, those close at 53 / 74 / 96
+        // columns. The spec asked for 70 as the middle floor; the fixed widths
+        // overrun it by four once the headers are wide enough to survive CJK
+        // labels, so the threshold moved rather than the headers being clipped
+        // to fit — `visible_column_tiers_close_at_their_narrowest_widths` is
+        // the executable form of that budget.
+        let columns = visible_columns(grid.width);
+        let widths = columns
+            .iter()
+            .map(|col| match col {
+                Column::Name => C::Min(width(*col)),
+                _ => C::Length(width(*col)),
+            })
+            .collect::<Vec<_>>();
 
         let header = Row::new(
-            Column::ALL
+            columns
                 .iter()
-                .take(6)
-                .enumerate()
-                .map(|(i, col)| {
+                .map(|col| {
                     let active = *col == self.sort_col;
+                    let logical = Column::ALL
+                        .iter()
+                        .position(|candidate| candidate == col)
+                        .expect("visible columns stay in Column::ALL");
                     // The digit hint stays on every column, active or not —
                     // dropping it from the sorted column hides the binding the
                     // user is most likely to press again.
                     let text = if active {
                         format!(
                             "{}·{}{}",
-                            i + 1,
+                            logical + 1,
                             col.label(lang),
                             if self.sort_asc { "▲" } else { "▼" }
                         )
                     } else {
-                        format!("{}·{}", i + 1, col.label(lang))
+                        format!("{}·{}", logical + 1, col.label(lang))
                     };
                     Cell::from(text).style(if active {
                         theme.column_header_active()
@@ -175,7 +213,7 @@ impl DataGrid {
 
         let body: Vec<Row> = rows
             .iter()
-            .map(|&i| self.row(&entries[i], theme))
+            .map(|&i| self.row(&entries[i], columns, lang, theme))
             .collect();
 
         let table = Table::new(body, widths)
@@ -188,15 +226,28 @@ impl DataGrid {
         frame.render_stateful_widget(table, grid, &mut state);
     }
 
-    fn row<'a>(&self, e: &'a AppEntry, theme: &Theme) -> Row<'a> {
-        let lang = e
-            .language
-            .as_ref()
-            .map(|l| l.to_string())
-            .unwrap_or_else(|| "—".into());
+    fn row<'a>(&self, e: &'a AppEntry, columns: &[Column], lang: Lang, theme: &Theme) -> Row<'a> {
         let install = e
             .install_date
             .map(|d| d.format("%Y-%m-%d").to_string())
+            .unwrap_or_else(|| "—".into());
+        let last_used = e
+            .last_used
+            .map(|d| d.format("%Y-%m-%d").to_string())
+            .unwrap_or_else(|| "—".into());
+        let language = e
+            .language
+            .as_ref()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "—".into());
+        let interface = e
+            .ui_kind
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "—".into());
+        let category = e
+            .category
+            .as_ref()
+            .map(|value| i18n::category_label(value, lang).into_owned())
             .unwrap_or_else(|| "—".into());
 
         // USAGE is the only place the terminal green appears in the whole
@@ -206,21 +257,69 @@ impl DataGrid {
                 format!("{} {}x", meter(e.usage_count), e.usage_count),
                 theme.meter_style(),
             )
-        } else if let Some(d) = e.last_used {
-            (d.format("%Y-%m-%d").to_string(), theme.muted())
         } else {
             ("—".into(), theme.muted())
         };
 
-        Row::new(vec![
-            Cell::from(truncate(&e.name, 30)).style(theme.base()),
-            Cell::from(e.source.to_string().to_uppercase()).style(theme.muted()),
-            Cell::from(lang).style(theme.muted()),
-            Cell::from(truncate(e.version.as_deref().unwrap_or("—"), 11)).style(theme.muted()),
-            Cell::from(install).style(theme.muted()),
-            Cell::from(usage).style(usage_style),
-        ])
+        Row::new(
+            columns
+                .iter()
+                .map(|col| match col {
+                    Column::Name => Cell::from(truncate(&e.name, 30)).style(theme.base()),
+                    Column::Source => {
+                        Cell::from(truncate(&e.source.to_string().to_uppercase(), width(*col) as usize))
+                            .style(theme.muted())
+                    }
+                    Column::UiKind => {
+                        Cell::from(truncate(&interface, width(*col) as usize)).style(theme.muted())
+                    }
+                    Column::Installed => Cell::from(install.clone()).style(theme.muted()),
+                    Column::Usage => Cell::from(usage.clone()).style(usage_style),
+                    Column::Category => {
+                        Cell::from(truncate(&category, width(*col) as usize)).style(theme.muted())
+                    }
+                    Column::LastUsed => Cell::from(last_used.clone()).style(theme.muted()),
+                    Column::Lang => {
+                        Cell::from(truncate(&language, width(*col) as usize)).style(theme.muted())
+                    }
+                    Column::Version => Cell::from(
+                        truncate(e.version.as_deref().unwrap_or("—"), width(*col) as usize),
+                    )
+                    .style(theme.muted()),
+                })
+                .collect::<Vec<_>>(),
+        )
         .style(theme.base())
+    }
+}
+
+/// The visible slice must come from the raw table width, before any per-column
+/// budgeting is subtracted, or the tier decision becomes self-referential.
+pub(crate) fn visible_columns(content_width: u16) -> &'static [Column] {
+    if content_width >= FULL_MIN_CONTENT_WIDTH {
+        FULL_COLUMNS
+    } else if content_width >= MEDIUM_MIN_CONTENT_WIDTH {
+        MEDIUM_COLUMNS
+    } else {
+        COMPACT_COLUMNS
+    }
+}
+
+pub(crate) fn width(col: Column) -> u16 {
+    match col {
+        Column::Name => 14,
+        Column::Source => 7,
+        Column::UiKind => 7,
+        Column::Installed => 12,
+        Column::Usage => 8,
+        // 13 columns, not 7: the built-in category names are words, and the
+        // longest ("Communication") is 13. At 7 almost every row rendered as
+        // `Develo…` — still unambiguous by prefix, but a column that is
+        // ellipsised on nearly every row is noise where a label should be.
+        Column::Category => 13,
+        Column::LastUsed => 12,
+        Column::Lang => 10,
+        Column::Version => 10,
     }
 }
 
@@ -241,7 +340,7 @@ fn meter(count: u32) -> &'static str {
 /// Counting characters overflows the column for CJK names — "系統設定" is four
 /// chars but eight columns wide. Byte slicing would be worse still: it panics
 /// mid-codepoint.
-fn truncate(text: &str, max: usize) -> String {
+pub(crate) fn truncate(text: &str, max: usize) -> String {
     if text.width() <= max {
         return text.to_string();
     }
@@ -267,6 +366,7 @@ pub fn compare(a: &AppEntry, b: &AppEntry, col: Column) -> Ordering {
     match col {
         Column::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
         Column::Source => a.source.to_string().cmp(&b.source.to_string()),
+        Column::UiKind => ui_kind_key(a).cmp(&ui_kind_key(b)),
         Column::Lang => lang_key(a).cmp(&lang_key(b)),
         Column::Version => a
             .version
@@ -275,16 +375,24 @@ pub fn compare(a: &AppEntry, b: &AppEntry, col: Column) -> Ordering {
             .cmp(b.version.as_deref().unwrap_or("")),
         Column::Installed => a.install_date.cmp(&b.install_date),
         Column::Usage => a.usage_count.cmp(&b.usage_count),
-        Column::Path => a
-            .path
-            .as_deref()
-            .unwrap_or("")
-            .cmp(b.path.as_deref().unwrap_or("")),
+        Column::Category => category_key(a).cmp(category_key(b)),
+        Column::LastUsed => a.last_used.cmp(&b.last_used),
     }
 }
 
 fn lang_key(e: &AppEntry) -> String {
     e.language.as_ref().map(|l| l.to_string()).unwrap_or_default()
+}
+
+fn ui_kind_key(e: &AppEntry) -> String {
+    e.ui_kind.map(|kind| kind.to_string()).unwrap_or_default()
+}
+
+/// Sorts on the untranslated key rather than the displayed label: `compare` has
+/// no language, and a sort order that reshuffles when the user presses `L`
+/// would make the ▲/▼ marker describe an order the column no longer has.
+fn category_key(e: &AppEntry) -> &str {
+    e.category.as_ref().map(|c| c.key()).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -352,5 +460,76 @@ mod tests {
         assert_eq!(g.sort_col, Column::Usage);
         g.toggle_sort(Column::Usage); // same column → flip
         assert!(g.sort_asc);
+    }
+
+    /// Narrowest grid the application can produce: `MIN_WIDTH` 60, less the
+    /// 2-column margin each side, the shadow column, and the panel's 2 borders
+    /// plus 2 padding. Nothing selects a tier below this, so it is the compact
+    /// tier's real floor — asserting that set against its own width, as the
+    /// first draft did, is a tautology that guards nothing.
+    const COMPACT_MIN_CONTENT_WIDTH: u16 = 51;
+
+    /// The `▌` cursor marker ratatui reserves ahead of the first column.
+    const HIGHLIGHT_WIDTH: u16 = 1;
+
+    /// A name column narrower than this is useless, so it is the floor NAME's
+    /// `Min` constraint has to be left after every fixed column is paid for.
+    const NAME_MIN_VISIBLE: u16 = 8;
+
+    /// The budget the old code carried as a hand-computed comment, made
+    /// executable. Overrun it and ratatui silently clips the rightmost headers
+    /// instead of reporting anything — the failure this whole tiering exists to
+    /// prevent. NAME is the one flexible column, so the guard is that the fixed
+    /// columns, the inter-column gaps and the cursor marker still leave it room.
+    #[test]
+    fn visible_column_tiers_close_at_their_narrowest_widths() {
+        for (floor, columns) in [
+            (COMPACT_MIN_CONTENT_WIDTH, COMPACT_COLUMNS),
+            (MEDIUM_MIN_CONTENT_WIDTH, MEDIUM_COLUMNS),
+            (FULL_MIN_CONTENT_WIDTH, FULL_COLUMNS),
+        ] {
+            assert_eq!(visible_columns(floor), columns, "width {floor} picks the wrong tier");
+
+            let fixed: u16 = columns
+                .iter()
+                .filter(|col| **col != Column::Name)
+                .map(|col| width(*col))
+                .sum();
+            let overhead = HIGHLIGHT_WIDTH + columns.len().saturating_sub(1) as u16;
+            assert!(
+                fixed + overhead + NAME_MIN_VISIBLE <= floor,
+                "{columns:?} need {} fixed + {NAME_MIN_VISIBLE} for NAME, budget {floor}",
+                fixed + overhead
+            );
+        }
+    }
+
+    /// Widening the terminal must never take a column away, and every visible
+    /// column must be one the digit keys can actually reach.
+    #[test]
+    fn widening_never_hides_a_column() {
+        let mut previous: &[Column] = &[];
+
+        for content_width in 0..=140 {
+            let columns = visible_columns(content_width);
+            assert!(!columns.is_empty());
+            assert!(
+                columns.len() >= previous.len(),
+                "width {content_width} hid columns"
+            );
+            // Each tier extends the narrower one rather than swapping columns
+            // around, so a resize never relocates a column the user was reading.
+            assert!(
+                previous.iter().all(|col| columns.contains(col)),
+                "width {content_width} dropped a column the narrower tier showed"
+            );
+            for col in columns {
+                assert!(
+                    Column::ALL.contains(col),
+                    "{col:?} is not reachable from a digit key"
+                );
+            }
+            previous = columns;
+        }
     }
 }

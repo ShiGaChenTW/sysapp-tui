@@ -1,5 +1,7 @@
 mod cache;
+mod config;
 mod enricher;
+mod exec;
 mod model;
 mod scanner;
 mod tui;
@@ -46,5 +48,56 @@ async fn main() -> Result<()> {
 
     // On a cold start the TUI opens immediately on a progress screen and runs
     // the scan behind it, so the terminal is never blank.
-    tui::run(snapshot.map(|s| (s.entries, Some(s.generated_at)))).await
+    let mut snapshot = snapshot.map(|s| (s.entries, Some(s.generated_at)));
+    let mut resume = None;
+
+    // The interface runs in a loop rather than once, because a terminal
+    // program cannot share the tty with it. Enter on a CLI or TUI unit exits
+    // the runtime, we run the child here with the terminal restored, then come
+    // back in. Suspending in place would mean reaching inside the `tears`
+    // runtime; this needs nothing from it.
+    loop {
+        let Some(handover) = tui::run(snapshot.take(), resume.take()).await? else {
+            return Ok(());
+        };
+
+        run_foreground(&handover);
+        resume = Some(handover.resume);
+
+        // Re-read rather than carrying the old inventory back in: the child
+        // may have been an installer, and the snapshot on disk is never older
+        // than the one we left with.
+        snapshot = cache::load().map(|s| (s.entries, Some(s.generated_at)));
+    }
+}
+
+/// Run a terminal program with the interface out of the way.
+///
+/// Failures are printed rather than returned: the interface is about to come
+/// back up, and aborting the whole process because one launch failed would
+/// throw away the session over something the user can simply not do again.
+fn run_foreground(handover: &tui::Suspend) {
+    use std::io::Write;
+
+    println!("\n$ {}", handover.name);
+    let _ = std::io::stdout().flush();
+
+    // No shell. `program` is a resolved path and `args` is a vector, so a
+    // package name containing `;`, a quote or a newline is one opaque argv
+    // entry and cannot become a second command.
+    let outcome = std::process::Command::new(&handover.program)
+        .args(&handover.args)
+        .status();
+
+    match outcome {
+        Ok(status) if status.success() => {}
+        Ok(status) => println!("\n[{} exited with {status}]", handover.name),
+        Err(e) => println!("\n[{} could not start: {e}]", handover.name),
+    }
+
+    // Without this the interface repaints instantly over whatever the child
+    // printed, and the user never sees the output they asked for.
+    print!("\n[press Enter to return]");
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stdin().read_line(&mut String::new());
 }

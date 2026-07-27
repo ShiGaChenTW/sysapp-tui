@@ -39,6 +39,14 @@ impl SearchBox {
         self.needle.clear();
     }
 
+    /// Replace the query wholesale, as when a filter is restored across a
+    /// suspend. Goes through `sync` like every other mutation so the
+    /// lowercased needle can never drift out of step with the query.
+    pub fn set_query(&mut self, query: &str) {
+        self.query = query.to_string();
+        self.sync();
+    }
+
     fn sync(&mut self) {
         self.needle = self.query.to_lowercase();
     }
@@ -93,6 +101,8 @@ mod tests {
             usage_count: 0,
             path: Some("/opt/homebrew/bin/rg".into()),
             description: None,
+            ui_kind: None,
+            category: None,
         }
     }
 

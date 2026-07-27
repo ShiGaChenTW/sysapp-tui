@@ -27,6 +27,8 @@ pub fn translate(mode: Mode, key: KeyEvent) -> Option<Message> {
     match mode {
         Mode::Browse => browse(key),
         Mode::Search => search(key),
+        Mode::Category => category(key),
+        Mode::Confirm => confirm(key),
         Mode::Detail => detail(key),
         Mode::Help => help(key),
     }
@@ -50,8 +52,18 @@ fn browse(key: KeyEvent) -> Option<Message> {
         KeyCode::Char('p') => Some(Message::ToggleNoise),
         KeyCode::Char('s') => Some(Message::ToggleIdleOnly),
         KeyCode::Char('L') => Some(Message::ToggleLanguage),
-        KeyCode::Enter | KeyCode::Char('i') => Some(Message::DetailOpen),
-        // L2: '1'..'7' pick the sort column. '0' is intentionally unbound.
+        KeyCode::Char('c') => Some(Message::CategoryFilterCycle),
+        // Bare `Char('C')`, not `Char('c') + SHIFT`: crossterm already resolves
+        // the shift into the capital, and matching on the modifier as well
+        // makes the binding depend on how the terminal reports it.
+        KeyCode::Char('C') => Some(Message::CategoryOpen),
+        // Enter now acts on the row rather than describing it: in a list
+        // interface it reads as "do the thing to this line", and opening a
+        // record was always the secondary action. The record keeps `i` and
+        // gains Tab.
+        KeyCode::Char('i') | KeyCode::Tab => Some(Message::DetailOpen),
+        KeyCode::Enter => Some(Message::ExecRequest),
+        // L2: '1'..'9' pick the sort column. '0' is intentionally unbound.
         KeyCode::Char(c @ '1'..='9') => {
             Column::from_index(c as usize - '1' as usize).map(Message::SortBy)
         }
@@ -72,9 +84,41 @@ fn search(key: KeyEvent) -> Option<Message> {
     }
 }
 
+/// Text entry for the category being assigned.
+///
+/// Up/Down are deliberately unbound, unlike `search`: that filter is
+/// incremental so the user picks a row while typing, whereas this labels the
+/// row that was already selected. Moving the cursor mid-edit would write the
+/// name onto a different unit than the one the user pressed `C` on.
+fn category(key: KeyEvent) -> Option<Message> {
+    match key.code {
+        KeyCode::Esc => Some(Message::CategoryCancel),
+        KeyCode::Enter => Some(Message::CategoryCommit),
+        KeyCode::Backspace => Some(Message::CategoryPop),
+        KeyCode::Char(c) if !c.is_control() => Some(Message::CategoryPush(c)),
+        _ => None,
+    }
+}
+
+/// The launch confirmation, and the reason it is a mode rather than a prompt.
+///
+/// Only `y` proceeds; **every** other key cancels, including keys that mean
+/// something in every other mode. A `j` held down a moment too long, or an
+/// `r` aimed at the grid, must not be able to answer a question about running
+/// a program. Defaulting the unrecognised key to "cancel" rather than to
+/// "ignore" also means the mode can never be sat in by accident.
+fn confirm(key: KeyEvent) -> Option<Message> {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => Some(Message::ExecConfirm),
+        _ => Some(Message::ExecCancel),
+    }
+}
+
 fn detail(key: KeyEvent) -> Option<Message> {
     match key.code {
-        KeyCode::Esc | KeyCode::Char('i') | KeyCode::Enter => Some(Message::DetailClose),
+        // Enter is gone from here: it runs things now. Tab joins `i` so the
+        // key that opens the record also closes it.
+        KeyCode::Esc | KeyCode::Char('i') | KeyCode::Tab => Some(Message::DetailClose),
         KeyCode::Char('q') => Some(Message::Quit),
         KeyCode::Char('?') => Some(Message::HelpToggle),
         KeyCode::Char('r') => Some(Message::RefreshStart),
@@ -106,10 +150,17 @@ mod tests {
         ));
         assert!(matches!(
             translate(Mode::Browse, press('7')),
-            Some(Message::SortBy(Column::Path))
+            Some(Message::SortBy(Column::Category))
         ));
-        // Only seven columns exist — '8' must not panic or wrap around.
-        assert!(translate(Mode::Browse, press('8')).is_none());
+        assert!(matches!(
+            translate(Mode::Browse, press('8')),
+            Some(Message::SortBy(Column::UiKind))
+        ));
+        assert!(matches!(
+            translate(Mode::Browse, press('9')),
+            Some(Message::SortBy(Column::LastUsed))
+        ));
+        assert_eq!(Column::from_index(9), None);
     }
 
     /// The same physical key means different things per mode. This is the
@@ -129,7 +180,14 @@ mod tests {
     #[test]
     fn ctrl_c_always_quits() {
         let k = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        for m in [Mode::Browse, Mode::Search, Mode::Detail, Mode::Help] {
+        for m in [
+            Mode::Browse,
+            Mode::Search,
+            Mode::Category,
+            Mode::Confirm,
+            Mode::Detail,
+            Mode::Help,
+        ] {
             assert!(matches!(translate(m, k), Some(Message::Quit)), "mode {m:?}");
         }
     }
@@ -143,6 +201,76 @@ mod tests {
         assert!(matches!(
             translate(Mode::Search, press('r')),
             Some(Message::SearchPush('r'))
+        ));
+    }
+
+    /// `c` and `C` act while browsing and are literal text while assigning —
+    /// the same modal-safety property `q_quits_browsing_but_types_in_search`
+    /// pins for the search box.
+    #[test]
+    fn category_keys_act_while_browsing_and_type_while_assigning() {
+        assert!(matches!(
+            translate(Mode::Browse, press('c')),
+            Some(Message::CategoryFilterCycle)
+        ));
+        assert!(matches!(
+            translate(Mode::Browse, press('C')),
+            Some(Message::CategoryOpen)
+        ));
+        for ch in ['c', 'C'] {
+            assert!(matches!(
+                translate(Mode::Category, press(ch)),
+                Some(Message::CategoryPush(got)) if got == ch
+            ));
+        }
+    }
+
+    /// The confirmation is a focus trap: `y` is the only key that proceeds,
+    /// and keys that navigate or act everywhere else must cancel rather than
+    /// leak through to the grid or satisfy the prompt.
+    #[test]
+    fn only_y_confirms_and_every_other_key_cancels() {
+        for ch in ['y', 'Y'] {
+            assert!(matches!(
+                translate(Mode::Confirm, press(ch)),
+                Some(Message::ExecConfirm)
+            ));
+        }
+        for ch in ['n', 'N', 'j', 'k', 'q', 'r', 'C', 'c', '/', '1', ' '] {
+            assert!(
+                matches!(translate(Mode::Confirm, press(ch)), Some(Message::ExecCancel)),
+                "{ch:?} must cancel, not proceed or fall through"
+            );
+        }
+        for code in [KeyCode::Esc, KeyCode::Enter, KeyCode::Down, KeyCode::Tab] {
+            let ev = KeyEvent::new(code, KeyModifiers::NONE);
+            assert!(
+                matches!(translate(Mode::Confirm, ev), Some(Message::ExecCancel)),
+                "{code:?} must cancel"
+            );
+        }
+    }
+
+    /// Enter acts on the row; the record moved to `i` and Tab.
+    #[test]
+    fn enter_runs_and_the_record_belongs_to_i_and_tab() {
+        assert!(matches!(
+            translate(Mode::Browse, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(Message::ExecRequest)
+        ));
+        assert!(matches!(
+            translate(Mode::Browse, press('i')),
+            Some(Message::DetailOpen)
+        ));
+        assert!(matches!(
+            translate(Mode::Browse, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+            Some(Message::DetailOpen)
+        ));
+        // And Enter no longer closes the record, or it would run the unit the
+        // moment the user tried to dismiss the panel.
+        assert!(!matches!(
+            translate(Mode::Detail, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Some(Message::DetailClose)
         ));
     }
 

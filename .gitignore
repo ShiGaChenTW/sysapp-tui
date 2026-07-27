@@ -4,3 +4,6 @@
 # Bootstrap 個人 override (不入庫)
 scripts/bootstrap.local.sh
 scripts/teardown.local.sh
+
+# 產品頁擷取的中間產物（最終 index.html 已入庫）
+docs/shots.json

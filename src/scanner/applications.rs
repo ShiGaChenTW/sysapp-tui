@@ -52,6 +52,8 @@ pub async fn scan() -> Result<Vec<AppEntry>> {
                 usage_count: 0,
                 path: app.path.clone(),
                 description: desc,
+                ui_kind: None,
+                category: None,
             }
         })
         .collect();

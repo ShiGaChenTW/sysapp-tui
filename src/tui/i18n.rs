@@ -13,7 +13,11 @@
 //! layout that pads or truncates around these strings must measure display
 //! width, not character count. `pad` is the helper for that.
 
+use std::borrow::Cow;
+
 use unicode_width::UnicodeWidthStr;
+
+use crate::model::Category;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Lang {
@@ -78,6 +82,24 @@ pub fn pad(s: &str, width: usize) -> String {
     }
 }
 
+pub fn category_label<'a>(category: &'a Category, lang: Lang) -> Cow<'a, str> {
+    let t = lang.strings();
+    match category {
+        Category::Development => Cow::Borrowed(t.cat_development),
+        Category::Media => Cow::Borrowed(t.cat_media),
+        Category::Productivity => Cow::Borrowed(t.cat_productivity),
+        Category::System => Cow::Borrowed(t.cat_system),
+        Category::Network => Cow::Borrowed(t.cat_network),
+        Category::Security => Cow::Borrowed(t.cat_security),
+        Category::Design => Cow::Borrowed(t.cat_design),
+        Category::Data => Cow::Borrowed(t.cat_data),
+        Category::Communication => Cow::Borrowed(t.cat_communication),
+        Category::Gaming => Cow::Borrowed(t.cat_gaming),
+        Category::Uncategorized => Cow::Borrowed(t.cat_uncategorized),
+        Category::Custom(name) => Cow::Borrowed(name),
+    }
+}
+
 pub struct Strings {
     // Masthead
     pub app_subtitle: &'static str,
@@ -89,6 +111,8 @@ pub struct Strings {
     pub minutes_ago: &'static str,
     pub hours_ago: &'static str,
     pub days_ago: &'static str,
+    pub months_ago: &'static str,
+    pub years_ago: &'static str,
     // Panels
     pub panel_inventory: &'static str,
     pub panel_record: &'static str,
@@ -97,6 +121,7 @@ pub struct Strings {
     pub noise_hidden: &'static str,
     pub idle_only: &'static str,
     pub sorted_by: &'static str,
+    pub cat_filter: &'static str,
     // Columns
     pub col_name: &'static str,
     pub col_source: &'static str,
@@ -104,14 +129,17 @@ pub struct Strings {
     pub col_version: &'static str,
     pub col_installed: &'static str,
     pub col_usage: &'static str,
-    pub col_path: &'static str,
+    pub col_ui_kind: &'static str,
+    pub col_category: &'static str,
+    pub col_last_used: &'static str,
     // Record panel
     pub sec_origin: &'static str,
     pub sec_activity: &'static str,
     pub sec_location: &'static str,
     pub sec_note: &'static str,
-    pub sec_sources: &'static str,
     pub f_source: &'static str,
+    pub f_interface: &'static str,
+    pub f_category: &'static str,
     pub f_language: &'static str,
     pub f_version: &'static str,
     pub f_installed: &'static str,
@@ -119,11 +147,26 @@ pub struct Strings {
     pub f_invocations: &'static str,
     pub none_recorded: &'static str,
     pub no_selection: &'static str,
+    pub age_l: &'static str,
+    pub age_r: &'static str,
+    pub cat_development: &'static str,
+    pub cat_media: &'static str,
+    pub cat_productivity: &'static str,
+    pub cat_system: &'static str,
+    pub cat_network: &'static str,
+    pub cat_security: &'static str,
+    pub cat_design: &'static str,
+    pub cat_data: &'static str,
+    pub cat_communication: &'static str,
+    pub cat_gaming: &'static str,
+    pub cat_uncategorized: &'static str,
     // Modes
     pub mode_browse: &'static str,
     pub mode_search: &'static str,
     pub mode_detail: &'static str,
     pub mode_help: &'static str,
+    pub mode_confirm: &'static str,
+    pub mode_category: &'static str,
     // Footer keys
     pub k_move: &'static str,
     pub k_filter: &'static str,
@@ -133,6 +176,9 @@ pub struct Strings {
     pub k_rescan: &'static str,
     pub k_keys: &'static str,
     pub k_quit: &'static str,
+    pub k_run: &'static str,
+    pub k_cat_filter: &'static str,
+    pub k_cat_set: &'static str,
     // Search
     pub search_label: &'static str,
     pub search_matches: &'static str,
@@ -151,6 +197,20 @@ pub struct Strings {
     pub noise_shown_notice: &'static str,
     pub idle_only_notice: &'static str,
     pub all_units_notice: &'static str,
+    pub confirm_run_l: &'static str,
+    pub confirm_run_r: &'static str,
+    pub exec_launched: &'static str,
+    pub exec_launch_failed: &'static str,
+    pub exec_not_runnable: &'static str,
+    pub exec_cannot_locate: &'static str,
+    pub exec_cancelled: &'static str,
+    pub category_label: &'static str,
+    pub category_hint: &'static str,
+    pub category_assigned: &'static str,
+    pub category_cleared: &'static str,
+    pub category_save_failed: &'static str,
+    pub category_filter_all: &'static str,
+    pub category_filter_none: &'static str,
     // Scanning screen
     pub initial_inventory: &'static str,
     pub no_snapshot: &'static str,
@@ -175,6 +235,7 @@ pub struct Strings {
     pub h_view: &'static str,
     pub h_data: &'static str,
     pub h_session: &'static str,
+    pub h_run_section: &'static str,
     pub h_down_one: &'static str,
     pub h_up_one: &'static str,
     pub h_down_page: &'static str,
@@ -193,6 +254,10 @@ pub struct Strings {
     pub h_language: &'static str,
     pub h_toggle_help: &'static str,
     pub h_quit: &'static str,
+    pub h_run: &'static str,
+    pub h_confirm: &'static str,
+    pub h_cat_filter: &'static str,
+    pub h_cat_set: &'static str,
     pub h_columns: &'static str,
 }
 
@@ -205,25 +270,36 @@ pub static EN: Strings = Strings {
     minutes_ago: "M AGO",
     hours_ago: "H AGO",
     days_ago: "D AGO",
+    months_ago: "MO AGO",
+    years_ago: "Y AGO",
     panel_inventory: " INVENTORY ",
     panel_record: " RECORD ",
     shown: "shown",
     noise_hidden: "noise hidden",
     idle_only: "IDLE ONLY",
-    sorted_by: "sorted by",
+    // Trailing space is deliberate and belongs to the string, not the format:
+    // the Chinese separator is `排序：`, which must sit flush against the
+    // column name. A space in the format would be wrong there, so each
+    // language carries its own.
+    sorted_by: "sorted by ",
+    // Trailing space for the same reason as `sorted_by` — see the note there.
+    cat_filter: "cat ",
     col_name: "NAME",
     col_source: "SRC",
     col_lang: "LANG",
     col_version: "VER",
     col_installed: "INSTALLED",
     col_usage: "USAGE",
-    col_path: "PATH",
+    col_ui_kind: "UI",
+    col_category: "CAT",
+    col_last_used: "LAST USED",
     sec_origin: "ORIGIN",
     sec_activity: "ACTIVITY",
     sec_location: "LOCATION",
     sec_note: "NOTE",
-    sec_sources: "SOURCES",
     f_source: "SOURCE",
+    f_interface: "INTERFACE",
+    f_category: "CATEGORY",
     f_language: "LANGUAGE",
     f_version: "VERSION",
     f_installed: "INSTALLED",
@@ -231,10 +307,25 @@ pub static EN: Strings = Strings {
     f_invocations: "INVOCATIONS",
     none_recorded: "none recorded",
     no_selection: "No unit selected",
+    age_l: " (",
+    age_r: ")",
+    cat_development: "Development",
+    cat_media: "Media",
+    cat_productivity: "Productivity",
+    cat_system: "System",
+    cat_network: "Network",
+    cat_security: "Security",
+    cat_design: "Design",
+    cat_data: "Data",
+    cat_communication: "Communication",
+    cat_gaming: "Gaming",
+    cat_uncategorized: "Uncategorized",
     mode_browse: "BROWSE",
     mode_search: "SEARCH",
     mode_detail: "DETAIL",
     mode_help: "HELP",
+    mode_confirm: "CONFIRM",
+    mode_category: "CATEGORY",
     k_move: "MOVE",
     k_filter: "FILTER",
     k_noise: "NOISE",
@@ -243,6 +334,9 @@ pub static EN: Strings = Strings {
     k_rescan: "RESCAN",
     k_keys: "KEYS",
     k_quit: "QUIT",
+    k_run: "RUN",
+    k_cat_filter: "CAT",
+    k_cat_set: "SET CAT",
     search_label: "SEARCH",
     search_matches: "MATCH",
     search_hint: "ESC CANCEL · ENTER KEEP",
@@ -259,6 +353,20 @@ pub static EN: Strings = Strings {
     noise_shown_notice: "SHOWING ALL SOURCES",
     idle_only_notice: "IDLE ONLY — NO USE IN 6 MONTHS",
     all_units_notice: "SHOWING ALL UNITS",
+    confirm_run_l: "RUN ",
+    confirm_run_r: "?  [y/N]",
+    exec_launched: "LAUNCHED",
+    exec_launch_failed: "LAUNCH FAILED",
+    exec_not_runnable: "NOT RUNNABLE — LIBRARY, SERVICE OR UNCLASSIFIED",
+    exec_cannot_locate: "CANNOT LOCATE EXECUTABLE",
+    exec_cancelled: "CANCELLED",
+    category_label: "CATEGORY",
+    category_hint: "ESC CANCEL · ENTER APPLY · EMPTY CLEARS",
+    category_assigned: "CATEGORY ASSIGNED",
+    category_cleared: "CATEGORY OVERRIDE CLEARED",
+    category_save_failed: "CATEGORY SAVE FAILED",
+    category_filter_all: "ALL CATEGORIES",
+    category_filter_none: "NO CATEGORIES TO FILTER",
     initial_inventory: "[ INITIAL INVENTORY ]",
     no_snapshot: "NO SNAPSHOT — FULL SCAN REQUIRED",
     scanning: "SCANNING",
@@ -280,6 +388,7 @@ pub static EN: Strings = Strings {
     h_view: "VIEW",
     h_data: "DATA",
     h_session: "SESSION",
+    h_run_section: "RUN",
     h_down_one: "down one unit",
     h_up_one: "up one unit",
     h_down_page: "down one page",
@@ -298,6 +407,10 @@ pub static EN: Strings = Strings {
     h_language: "switch language",
     h_toggle_help: "toggle this overlay",
     h_quit: "quit",
+    h_run: "run the selected unit; confirms first",
+    h_confirm: "y runs it — any other key cancels",
+    h_cat_filter: "cycle the category filter",
+    h_cat_set: "assign a category; empty input clears it",
     h_columns: "COLUMNS",
 };
 
@@ -310,25 +423,31 @@ pub static ZH_HANT: Strings = Strings {
     minutes_ago: " 分鐘前",
     hours_ago: " 小時前",
     days_ago: " 天前",
+    months_ago: " 個月前",
+    years_ago: " 年前",
     panel_inventory: " 套件清單 ",
     panel_record: " 詳細資料 ",
     shown: "項符合",
     noise_hidden: "項系統雜訊已隱藏",
     idle_only: "僅顯示閒置",
     sorted_by: "排序：",
+    cat_filter: "分類：",
     col_name: "名稱",
     col_source: "來源",
     col_lang: "語言",
     col_version: "版本",
-    col_installed: "安裝日期",
+    col_installed: "安裝",
     col_usage: "使用",
-    col_path: "路徑",
+    col_ui_kind: "介面",
+    col_category: "分類",
+    col_last_used: "近用",
     sec_origin: "來源資訊",
     sec_activity: "使用狀況",
     sec_location: "安裝位置",
     sec_note: "說明",
-    sec_sources: "來源統計",
     f_source: "來源",
+    f_interface: "介面類型",
+    f_category: "分類",
     f_language: "語言",
     f_version: "版本",
     f_installed: "安裝日期",
@@ -336,10 +455,25 @@ pub static ZH_HANT: Strings = Strings {
     f_invocations: "呼叫次數",
     none_recorded: "無使用紀錄",
     no_selection: "未選取任何項目",
+    age_l: "（",
+    age_r: "）",
+    cat_development: "開發",
+    cat_media: "媒體",
+    cat_productivity: "生產力",
+    cat_system: "系統",
+    cat_network: "網路",
+    cat_security: "安全",
+    cat_design: "設計",
+    cat_data: "資料",
+    cat_communication: "通訊",
+    cat_gaming: "遊戲",
+    cat_uncategorized: "未分類",
     mode_browse: "瀏覽",
     mode_search: "搜尋",
     mode_detail: "詳細",
     mode_help: "說明",
+    mode_confirm: "確認",
+    mode_category: "分類",
     k_move: "移動",
     k_filter: "過濾",
     k_noise: "雜訊",
@@ -348,6 +482,9 @@ pub static ZH_HANT: Strings = Strings {
     k_rescan: "重掃",
     k_keys: "按鍵",
     k_quit: "離開",
+    k_run: "執行",
+    k_cat_filter: "分類",
+    k_cat_set: "設分類",
     search_label: "搜尋",
     search_matches: "項符合",
     search_hint: "ESC 取消 · ENTER 保留",
@@ -364,6 +501,20 @@ pub static ZH_HANT: Strings = Strings {
     noise_shown_notice: "顯示全部來源",
     idle_only_notice: "僅顯示閒置 — 六個月內未使用",
     all_units_notice: "顯示全部項目",
+    confirm_run_l: "執行 ",
+    confirm_run_r: "？　[y/N]",
+    exec_launched: "已啟動",
+    exec_launch_failed: "啟動失敗",
+    exec_not_runnable: "無法執行 — 函式庫、背景服務或未分類",
+    exec_cannot_locate: "找不到執行檔",
+    exec_cancelled: "已取消",
+    category_label: "指派分類",
+    category_hint: "ESC 取消 · ENTER 套用 · 留空清除",
+    category_assigned: "已指派分類",
+    category_cleared: "已清除自訂分類",
+    category_save_failed: "分類寫入失敗",
+    category_filter_all: "顯示全部分類",
+    category_filter_none: "沒有可篩選的分類",
     initial_inventory: "［ 首次盤點 ］",
     no_snapshot: "尚無快取 — 需要完整掃描",
     scanning: "掃描中",
@@ -385,6 +536,7 @@ pub static ZH_HANT: Strings = Strings {
     h_view: "顯示",
     h_data: "資料",
     h_session: "工作階段",
+    h_run_section: "執行",
     h_down_one: "往下一項",
     h_up_one: "往上一項",
     h_down_page: "往下一頁",
@@ -403,6 +555,10 @@ pub static ZH_HANT: Strings = Strings {
     h_language: "切換語言",
     h_toggle_help: "開關此說明浮層",
     h_quit: "離開",
+    h_run: "執行選取的項目，會先確認",
+    h_confirm: "按 y 執行，其他任何鍵都取消",
+    h_cat_filter: "循環切換分類篩選",
+    h_cat_set: "指派分類，留空則清除",
     h_columns: "欄位",
 };
 
@@ -446,25 +602,46 @@ mod tests {
 
     /// Column headers carry a `N·` prefix and a sort arrow; the whole thing
     /// has to fit the narrowest column the grid allocates.
+    /// Labels that are concatenated straight onto a value must carry their own
+    /// separator, because the separator is language-specific: English wants a
+    /// space (`sorted by NAME`), Chinese wants a full-width colon and no space
+    /// (`排序：名稱`). Putting one in the format string is wrong for Chinese, so
+    /// the string owns it — and then it is easy to forget, which is exactly how
+    /// `sorted byUSAGE` and `catDevelopment` reached a released screenshot.
+    #[test]
+    fn concatenated_labels_carry_their_own_separator() {
+        for lang in [Lang::En, Lang::ZhHant] {
+            let t = lang.strings();
+            for (name, label) in [("sorted_by", t.sorted_by), ("cat_filter", t.cat_filter)] {
+                let last = label.chars().next_back().expect("label is never empty");
+                assert!(
+                    last.is_whitespace() || matches!(last, ':' | '：'),
+                    "{lang:?} {name} is {label:?} — it is written directly against a \
+                     value, so it must end in a space or a colon"
+                );
+            }
+        }
+    }
+
     #[test]
     fn column_headers_fit_their_widths() {
-        // Matches the widths in components::table.
-        let budgets = [14usize, 7, 10, 10, 12, 10];
-        for s in [&EN, &ZH_HANT] {
-            let cols = [
-                s.col_name,
-                s.col_source,
-                s.col_lang,
-                s.col_version,
-                s.col_installed,
-                s.col_usage,
-            ];
-            for (label, budget) in cols.iter().zip(budgets) {
+        // Budgets are read out of `components::table` rather than restated
+        // here. The previous copy listed six columns and its own widths, so it
+        // kept passing after the grid grew to nine — a duplicated constant
+        // stops guarding the thing it was written to guard the moment the
+        // original moves.
+        use crate::tui::components::table::width;
+        use crate::tui::message::Column;
+
+        for lang in [Lang::En, Lang::ZhHant] {
+            for col in Column::ALL {
+                let label = col.label(lang);
                 // "1·" prefix (2 cols) plus a sort arrow (1 col).
                 let rendered = 2 + label.width() + 1;
+                let budget = width(col) as usize;
                 assert!(
                     rendered <= budget,
-                    "header {label:?} renders {rendered} columns, budget {budget}"
+                    "{lang:?} header {label:?} renders {rendered} columns, budget {budget}"
                 );
             }
         }
@@ -497,5 +674,23 @@ mod tests {
     fn toggling_twice_returns_to_the_start() {
         assert_eq!(Lang::ZhHant.toggled().toggled(), Lang::ZhHant);
         assert_eq!(Lang::En.toggled(), Lang::ZhHant);
+    }
+
+    #[test]
+    fn category_strings_are_populated_in_both_languages() {
+        for (en, zh_hant) in [
+            (EN.mode_category, ZH_HANT.mode_category),
+            (EN.category_label, ZH_HANT.category_label),
+            (EN.category_hint, ZH_HANT.category_hint),
+            (EN.cat_filter, ZH_HANT.cat_filter),
+            (EN.category_assigned, ZH_HANT.category_assigned),
+            (EN.category_cleared, ZH_HANT.category_cleared),
+            (EN.category_save_failed, ZH_HANT.category_save_failed),
+            (EN.category_filter_all, ZH_HANT.category_filter_all),
+            (EN.category_filter_none, ZH_HANT.category_filter_none),
+        ] {
+            assert!(!en.is_empty());
+            assert!(!zh_hant.is_empty());
+        }
     }
 }

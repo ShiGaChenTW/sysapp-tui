@@ -89,7 +89,7 @@ fn parse_file_output(desc: &str) -> Language {
         Language::Python
     } else if d.contains("ruby") {
         Language::Ruby
-    } else     if d.contains("shell script")
+    } else if d.contains("shell script")
         || d.contains("/bin/sh")
         || d.contains("/bin/bash")
         || d.contains("/bin/zsh")
@@ -131,8 +131,7 @@ async fn detect_app_language(path: Option<&str>) -> Option<Language> {
     }
 
     // Java (JetBrains, Eclipse)
-    if app.join("Contents/runtime/Contents/Home").exists()
-        || app.join("Contents/Eclipse").exists()
+    if app.join("Contents/runtime/Contents/Home").exists() || app.join("Contents/Eclipse").exists()
     {
         return Some(Language::Java);
     }
