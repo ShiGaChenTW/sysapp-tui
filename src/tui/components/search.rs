@@ -9,6 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::model::AppEntry;
+use crate::tui::i18n::Lang;
 use crate::tui::theme::Theme;
 
 #[derive(Debug, Default)]
@@ -62,14 +63,15 @@ impl SearchBox {
     }
 
     /// Footer line while the search mode holds focus.
-    pub fn render(&self, frame: &mut Frame, area: Rect, hits: usize, theme: &Theme) {
+    pub fn render(&self, frame: &mut Frame, area: Rect, hits: usize, lang: Lang, theme: &Theme) {
+        let t = lang.strings();
         let line = Line::from(vec![
-            Span::styled(" SEARCH ", theme.status_band()),
+            Span::styled(format!(" {} ", t.search_label), theme.masthead()),
             Span::styled(" /", theme.accented()),
             Span::styled(&self.query, theme.heading()),
             Span::styled("█", theme.accented()),
-            Span::styled(format!("  {hits} MATCH"), theme.base()),
-            Span::styled("   ESC CANCEL · ENTER KEEP", theme.muted()),
+            Span::styled(format!("  {hits} {}", t.search_matches), theme.base()),
+            Span::styled(format!("   {}", t.search_hint), theme.muted()),
         ]);
         frame.render_widget(Paragraph::new(line).style(theme.base()), area);
     }

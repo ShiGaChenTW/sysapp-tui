@@ -12,12 +12,14 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::model::AppEntry;
+use crate::tui::i18n::{self, Lang};
 use crate::tui::theme::Theme;
 
 pub struct DetailPanel<'a> {
     pub entry: Option<&'a AppEntry>,
     /// Source-name / count pairs, shown beneath the record.
     pub sources: &'a [(String, usize)],
+    pub lang: Lang,
 }
 
 impl DetailPanel<'_> {
@@ -27,7 +29,7 @@ impl DetailPanel<'_> {
             .borders(Borders::ALL)
             .border_type(BorderType::Plain)
             .border_style(theme.panel_border())
-            .title(Span::styled(" RECORD ", theme.panel_title()))
+            .title(Span::styled(self.lang.strings().panel_record, theme.panel_title()))
             .padding(Padding::new(1, 1, 1, 0))
             .style(theme.base());
         let inner = block.inner(area);
@@ -35,16 +37,19 @@ impl DetailPanel<'_> {
 
         let mut lines = match self.entry {
             Some(e) => self.body(e, inner.width, theme),
-            None => vec![Line::from(Span::styled(" No unit selected", theme.muted()))],
+            None => vec![Line::from(Span::styled(
+                format!(" {}", self.lang.strings().no_selection),
+                theme.muted(),
+            ))],
         };
 
         if !self.sources.is_empty() && inner.height as usize > lines.len() + 2 {
             lines.push(Line::from(Span::styled("", theme.base())));
-            lines.push(section("SOURCES", theme));
+            lines.push(section(self.lang.strings().sec_sources, theme));
             let room = (inner.height as usize).saturating_sub(lines.len());
             for (name, n) in self.sources.iter().take(room) {
                 lines.push(Line::from(vec![
-                    Span::styled(format!("   {name:<10}"), theme.muted()),
+                    Span::styled(format!("   {}", i18n::pad(name, 10)), theme.muted()),
                     Span::styled(format!("{n}"), theme.base()),
                 ]));
             }
@@ -62,8 +67,8 @@ impl DetailPanel<'_> {
         if rect.width < 24 || rect.height < 5 {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
-                    " TERMINAL TOO SMALL FOR RECORD ",
-                    theme.status_band(),
+                    self.lang.strings().too_small_record,
+                    theme.masthead(),
                 )))
                 .style(theme.base()),
                 area,
@@ -75,7 +80,7 @@ impl DetailPanel<'_> {
             .borders(Borders::ALL)
             .border_type(BorderType::Plain)
             .border_style(theme.accented())
-            .title(Span::styled(" RECORD ", theme.panel_title()))
+            .title(Span::styled(self.lang.strings().panel_record, theme.panel_title()))
             .padding(Padding::new(1, 1, 1, 1))
             .style(theme.overlay());
 
@@ -84,9 +89,13 @@ impl DetailPanel<'_> {
     }
 
     fn body<'b>(&self, e: &AppEntry, width: u16, theme: &Theme) -> Vec<Line<'b>> {
-        let field = |label: &'static str, value: String| -> Line<'b> {
+        let t = self.lang.strings();
+        // Padded by display width: `{label:<13}` counts characters, so a CJK
+        // label would be padded to half the column count and collide with the
+        // value beside it.
+        let field = |label: &str, value: String| -> Line<'b> {
             vec![
-                Span::styled(format!("   {label:<13}"), theme.muted()),
+                Span::styled(format!("   {}", i18n::pad(label, 13)), theme.muted()),
                 Span::styled(value, theme.base()),
             ]
             .into()
@@ -98,40 +107,40 @@ impl DetailPanel<'_> {
                 Span::styled(e.name.clone(), theme.heading()),
             ]),
             Line::from(Span::styled("", theme.base())),
-            section("ORIGIN", theme),
-            field("SOURCE", e.source.to_string().to_uppercase()),
+            section(t.sec_origin, theme),
+            field(t.f_source, e.source.to_string().to_uppercase()),
             field(
-                "LANGUAGE",
+                t.f_language,
                 e.language
                     .as_ref()
                     .map(|l| l.to_string())
                     .unwrap_or_else(|| "—".into()),
             ),
-            field("VERSION", e.version.clone().unwrap_or_else(|| "—".into())),
+            field(t.f_version, e.version.clone().unwrap_or_else(|| "—".into())),
             Line::from(Span::styled("", theme.base())),
-            section("ACTIVITY", theme),
+            section(t.sec_activity, theme),
             field(
-                "INSTALLED",
+                t.f_installed,
                 e.install_date
                     .map(|d| d.format("%Y-%m-%d").to_string())
                     .unwrap_or_else(|| "—".into()),
             ),
             field(
-                "LAST USED",
+                t.f_last_used,
                 e.last_used
                     .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
                     .unwrap_or_else(|| "—".into()),
             ),
             field(
-                "INVOCATIONS",
+                t.f_invocations,
                 if e.usage_count == 0 {
-                    "none recorded".into()
+                    t.none_recorded.into()
                 } else {
                     format!("{}", e.usage_count)
                 },
             ),
             Line::from(Span::styled("", theme.base())),
-            section("LOCATION", theme),
+            section(t.sec_location, theme),
             Line::from(Span::styled(
                 format!("   {}", e.path.as_deref().unwrap_or("—")),
                 theme.base(),
@@ -140,7 +149,7 @@ impl DetailPanel<'_> {
 
         if let Some(d) = &e.description {
             lines.push(Line::from(Span::styled("", theme.base())));
-            lines.push(section("NOTE", theme));
+            lines.push(section(t.sec_note, theme));
             // Wrapped here rather than by `Paragraph`, which would break the
             // continuation flush against the panel border and lose the indent.
             for chunk in wrap_indented(d, width.saturating_sub(3)) {
@@ -204,6 +213,7 @@ mod tests {
     /// ever added, this fails instead of rendering "INVOCATIONS96".
     #[test]
     fn label_padding_clears_the_longest_label() {
+        // Both languages are covered by i18n::tests::record_labels_fit_their_column.
         const PAD: usize = 13;
         for label in ["SOURCE", "LANGUAGE", "VERSION", "INSTALLED", "LAST USED", "INVOCATIONS"] {
             assert!(label.len() < PAD, "{label} needs padding > {}", label.len());

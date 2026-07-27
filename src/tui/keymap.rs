@@ -49,6 +49,7 @@ fn browse(key: KeyEvent) -> Option<Message> {
         KeyCode::Char('r') => Some(Message::RefreshStart),
         KeyCode::Char('p') => Some(Message::ToggleNoise),
         KeyCode::Char('s') => Some(Message::ToggleIdleOnly),
+        KeyCode::Char('L') => Some(Message::ToggleLanguage),
         KeyCode::Enter | KeyCode::Char('i') => Some(Message::DetailOpen),
         // L2: '1'..'7' pick the sort column. '0' is intentionally unbound.
         KeyCode::Char(c @ '1'..='9') => {

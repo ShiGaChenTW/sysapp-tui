@@ -7,6 +7,7 @@
 use crossterm::event::Event;
 
 use crate::model::AppEntry;
+use crate::tui::i18n::Lang;
 
 /// Which input context owns the keyboard right now.
 ///
@@ -24,12 +25,13 @@ pub enum Mode {
 impl Mode {
     /// Shown verbatim in the status band. Modal confusion is anti-pattern #9;
     /// the current mode is always on screen.
-    pub fn label(self) -> &'static str {
+    pub fn label(self, lang: Lang) -> &'static str {
+        let t = lang.strings();
         match self {
-            Self::Browse => "BROWSE",
-            Self::Search => "SEARCH",
-            Self::Detail => "DETAIL",
-            Self::Help => "HELP",
+            Self::Browse => t.mode_browse,
+            Self::Search => t.mode_search,
+            Self::Detail => t.mode_detail,
+            Self::Help => t.mode_help,
         }
     }
 }
@@ -57,15 +59,16 @@ impl Column {
         Column::Path,
     ];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self, lang: Lang) -> &'static str {
+        let t = lang.strings();
         match self {
-            Self::Name => "NAME",
-            Self::Source => "SRC",
-            Self::Lang => "LANG",
-            Self::Version => "VER",
-            Self::Installed => "INSTALLED",
-            Self::Usage => "USAGE",
-            Self::Path => "PATH",
+            Self::Name => t.col_name,
+            Self::Source => t.col_source,
+            Self::Lang => t.col_lang,
+            Self::Version => t.col_version,
+            Self::Installed => t.col_installed,
+            Self::Usage => t.col_usage,
+            Self::Path => t.col_path,
         }
     }
 
@@ -125,6 +128,11 @@ pub enum Message {
     ToggleNoise,
     /// Show only units with no evidence of use.
     ToggleIdleOnly,
+    /// Switch between Traditional Chinese and English.
+    ToggleLanguage,
+    /// The background cache write failed; the data on screen is fine, only
+    /// the next launch pays for it.
+    CacheWriteFailed(String),
 
     Quit,
 }

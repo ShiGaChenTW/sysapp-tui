@@ -9,45 +9,55 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::tui::components::detail::centered;
+use crate::tui::i18n::Lang;
 use crate::tui::message::Column;
 use crate::tui::theme::Theme;
 
 /// `(keys, description)` grouped under section headers. A `None` key marks
-/// the row as a section title.
-const BINDINGS: &[(Option<&str>, &str)] = &[
-    (None, "NAVIGATE"),
-    (Some("j / ↓"), "down one unit"),
-    (Some("k / ↑"), "up one unit"),
-    (Some("d / PgDn"), "down one page"),
-    (Some("u / PgUp"), "up one page"),
-    (Some("g / Home"), "first unit"),
-    (Some("G / End"), "last unit"),
-    (None, "INSPECT"),
-    (Some("Enter / i"), "open unit record"),
-    (Some("Esc"), "close overlay"),
-    (None, "FILTER"),
-    (Some("/"), "live filter — name, source, lang, path"),
-    (Some("Esc"), "cancel filter and restore full inventory"),
-    (Some("Enter"), "keep filter, return to browse"),
-    (None, "SORT"),
-    (Some("1 … 7"), "sort by column; repeat to reverse"),
-    (None, "VIEW"),
-    (Some("p"), "show/hide packaging noise (pkgutil, /System)"),
-    (Some("s"), "show only units with no evidence of use"),
-    (None, "DATA"),
-    (Some("r"), "rescan in the background — keys stay live"),
-    (None, "SESSION"),
-    (Some("?"), "toggle this overlay"),
-    (Some("q / Ctrl-C"), "quit"),
-];
+/// the row as a section title. Built per language rather than declared as a
+/// const so the descriptions can be translated.
+fn bindings(lang: Lang) -> Vec<(Option<&'static str>, &'static str)> {
+    let t = lang.strings();
+    vec![
+        (None, t.h_navigate),
+        (Some("j / ↓"), t.h_down_one),
+        (Some("k / ↑"), t.h_up_one),
+        (Some("d / PgDn"), t.h_down_page),
+        (Some("u / PgUp"), t.h_up_page),
+        (Some("g / Home"), t.h_first),
+        (Some("G / End"), t.h_last),
+        (None, t.h_inspect),
+        (Some("Enter / i"), t.h_open_record),
+        (Some("Esc"), t.h_close_overlay),
+        (None, t.h_filter),
+        (Some("/"), t.h_live_filter),
+        (Some("Esc"), t.h_cancel_filter),
+        (Some("Enter"), t.h_keep_filter),
+        (None, t.h_sort),
+        (Some("1 … 6"), t.h_sort_col),
+        (None, t.h_view),
+        (Some("p"), t.h_toggle_noise),
+        (Some("s"), t.h_toggle_idle),
+        (None, t.h_data),
+        (Some("r"), t.h_rescan),
+        (None, t.h_session),
+        (Some("L"), t.h_language),
+        (Some("?"), t.h_toggle_help),
+        (Some("q / Ctrl-C"), t.h_quit),
+    ]
+}
 
-pub struct HelpOverlay;
+pub struct HelpOverlay {
+    pub lang: Lang,
+}
 
 impl HelpOverlay {
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let mut lines: Vec<Line> = Vec::with_capacity(BINDINGS.len() + 3);
+        let t = self.lang.strings();
+        let entries = bindings(self.lang);
+        let mut lines: Vec<Line> = Vec::with_capacity(entries.len() + 3);
 
-        for (key, desc) in BINDINGS {
+        for (key, desc) in &entries {
             match key {
                 None => {
                     lines.push(Line::from(Span::styled("", theme.base())));
@@ -65,12 +75,12 @@ impl HelpOverlay {
 
         lines.push(Line::from(Span::styled("", theme.base())));
         lines.push(Line::from(vec![
-            Span::styled("   COLUMNS  ", theme.muted()),
+            Span::styled(format!("   {}  ", t.h_columns), theme.muted()),
             Span::styled(
                 Column::ALL
                     .iter()
                     .enumerate()
-                    .map(|(i, c)| format!("{}·{}", i + 1, c.label()))
+                    .map(|(i, c)| format!("{}·{}", i + 1, c.label(self.lang)))
                     .collect::<Vec<_>>()
                     .join("  "),
                 theme.base(),
@@ -81,8 +91,8 @@ impl HelpOverlay {
         if rect.width < 24 || rect.height < 5 {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
-                    " TERMINAL TOO SMALL FOR HELP ",
-                    theme.status_band(),
+                    t.too_small_help,
+                    theme.masthead(),
                 )))
                 .style(theme.base()),
                 area,
@@ -94,7 +104,7 @@ impl HelpOverlay {
             .borders(Borders::ALL)
             .border_type(BorderType::Double)
             .border_style(theme.accented())
-            .title(Span::styled(" [ KEY REFERENCE ] ", theme.status_band()))
+            .title(Span::styled(t.help_title, theme.masthead()))
             .style(theme.overlay());
 
         frame.render_widget(Clear, rect);

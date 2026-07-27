@@ -23,6 +23,7 @@
 //! Hojicha's Bubble Tea-style shape; only the crate is absent.
 
 mod components;
+pub mod i18n;
 mod keymap;
 mod message;
 mod theme;
@@ -48,6 +49,7 @@ use components::scanning::{ScanningScreen, SourceState};
 use components::search::SearchBox;
 use components::statusbar::StatusBar;
 use components::table::{self, DataGrid};
+use i18n::Lang;
 use message::{Message, Mode};
 use theme::Theme;
 
@@ -118,6 +120,8 @@ pub struct App {
     /// Per-source totals for the record panel. Recomputed only when the
     /// inventory itself changes — not on every keystroke.
     source_counts: Vec<(String, usize)>,
+    /// Interface language. Detected from the locale, toggled with `L`.
+    lang: Lang,
     /// Terminal width, so `update` can tell whether the record is already on
     /// screen. Seeded from the real terminal and kept current by resize events;
     /// without it, Enter would flip the mode label to DETAIL on a wide terminal
@@ -262,17 +266,18 @@ impl App {
 
     /// Filter and sort summary, shown as the grid panel's first line.
     fn stats_line(&self) -> Line<'_> {
+        let t = self.lang.strings();
         let mut spans = vec![
             Span::styled(format!(" {}", self.rows.len()), self.theme.heading()),
-            Span::styled(" shown", self.theme.muted()),
+            Span::styled(format!(" {}", t.shown), self.theme.muted()),
         ];
         let hidden = self.hidden_noise();
         if hidden > 0 {
             spans.push(Span::styled(format!("   {hidden}"), self.theme.base()));
-            spans.push(Span::styled(" noise hidden", self.theme.muted()));
+            spans.push(Span::styled(format!(" {}", t.noise_hidden), self.theme.muted()));
         }
         if self.idle_only {
-            spans.push(Span::styled("   IDLE ONLY", self.theme.accented()));
+            spans.push(Span::styled(format!("   {}", t.idle_only), self.theme.accented()));
         }
         if !self.search.query().is_empty() {
             spans.push(Span::styled(
@@ -282,8 +287,9 @@ impl App {
         }
         spans.push(Span::styled(
             format!(
-                "   sorted by {} {}",
-                self.grid.sort_col.label(),
+                "   {}{} {}",
+                t.sorted_by,
+                self.grid.sort_col.label(self.lang),
                 if self.grid.sort_asc { "▲" } else { "▼" }
             ),
             self.theme.muted(),
@@ -293,11 +299,17 @@ impl App {
 
     fn render_too_small(&self, frame: &mut Frame, area: Rect) {
         let lines = vec![
-            Line::from(Span::styled(" [ VIEWPORT UNDERSIZED ] ", self.theme.status_band())),
+            Line::from(Span::styled(
+                format!(" {} ", self.lang.strings().viewport_undersized),
+                self.theme.masthead(),
+            )),
             Line::from(Span::styled(
                 format!(
-                    " NEED {MIN_WIDTH}x{MIN_HEIGHT} — HAVE {}x{} ",
-                    area.width, area.height
+                    " {} {MIN_WIDTH}x{MIN_HEIGHT} — {} {}x{} ",
+                    self.lang.strings().need,
+                    self.lang.strings().have,
+                    area.width,
+                    area.height
                 ),
                 self.theme.base(),
             )),
@@ -330,6 +342,7 @@ impl Application for App {
             idle_only: false,
             scan: None,
             source_counts: Vec::new(),
+            lang: Lang::detect(),
             width: crossterm::terminal::size().map(|(w, _)| w).unwrap_or(120),
         };
         app.source_counts = source_counts(&app.entries);
@@ -436,7 +449,7 @@ impl Application for App {
             Message::RefreshDone(entries) if entries.is_empty() => {
                 // Same rule on the rescan path: keep the inventory we have.
                 self.refreshing = false;
-                self.notice = Some("RESCAN FOUND NOTHING — KEEPING PREVIOUS DATA".into());
+                self.notice = Some(self.lang.strings().rescan_empty.into());
             }
             Message::RefreshDone(entries) => {
                 let anchor = self.selected_entry().map(|e| e.name.clone());
@@ -445,16 +458,27 @@ impl Application for App {
                 self.source_counts = source_counts(&self.entries);
                 self.generated_at = None; // freshly scanned — this is live data
                 self.refreshing = false;
-                self.notice = Some(format!("RESCAN COMPLETE — {count} UNITS"));
+                self.notice = Some(format!("{} — {count} {}", self.lang.strings().rescan_complete, self.lang.strings().units));
                 // Filter and sort are preserved; only the underlying data moved.
                 self.rebuild_anchored(anchor);
             }
             Message::RefreshFailed(e) => {
                 // Keep the old inventory. Stale data beats an empty screen.
                 self.refreshing = false;
-                self.notice = Some(format!("RESCAN FAILED — {e}"));
+                self.notice = Some(format!("{} — {e}", self.lang.strings().rescan_failed));
             }
             Message::Tick => self.tick = self.tick.wrapping_add(1),
+
+            Message::CacheWriteFailed(e) => {
+                self.notice = Some(format!("{} — {e}", self.lang.strings().cache_write_failed));
+            }
+
+            Message::ToggleLanguage => {
+                self.lang = self.lang.toggled();
+                // The notice is written in the language just switched to, so
+                // it doubles as immediate confirmation the switch took effect.
+                self.notice = Some(self.lang.strings().app_subtitle.to_string());
+            }
 
             Message::SourceScanned(name, result) => {
                 let Some(scan) = self.scan.as_mut() else {
@@ -489,17 +513,35 @@ impl Application for App {
                 // that the machine has no packages. Surface it and leave the
                 // cache alone rather than persisting the failure.
                 if entries.is_empty() {
-                    self.notice = Some("SCAN FOUND NOTHING — press r to retry".into());
+                    self.notice = Some(self.lang.strings().scan_empty.into());
                 } else {
                     // Off the UI thread: `save` serialises ~900 entries and
                     // does a synchronous write, which would stall keystrokes
                     // and the spinner on a slow or full volume. The rescan
                     // path already writes inside its async task; this is the
                     // cold-start path catching up.
+                    //
+                    // The result comes back as a message rather than being
+                    // discarded — a silent cache failure means an unexplained
+                    // 90-second launch next time.
                     let to_cache = entries.clone();
-                    tokio::task::spawn_blocking(move || {
-                        let _ = crate::cache::save(&to_cache);
-                    });
+                    self.entries = entries;
+                    self.source_counts = source_counts(&self.entries);
+                    self.generated_at = None;
+                    self.scan = None;
+                    self.rebuild();
+                    return Command::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || crate::cache::save(&to_cache))
+                                .await
+                                .map_err(|e| e.to_string())
+                                .and_then(|r| r.map_err(|e| format!("{e:#}")))
+                        },
+                        |r| match r {
+                            Ok(()) => Message::Tick,
+                            Err(e) => Message::CacheWriteFailed(e),
+                        },
+                    );
                 }
                 self.entries = entries;
                 self.source_counts = source_counts(&self.entries);
@@ -509,20 +551,22 @@ impl Application for App {
             }
 
             Message::ToggleNoise => {
+                let t = self.lang.strings();
                 self.hide_noise = !self.hide_noise;
                 self.notice = Some(if self.hide_noise {
-                    "PACKAGING NOISE HIDDEN".into()
+                    t.noise_hidden_notice.into()
                 } else {
-                    "SHOWING ALL SOURCES".into()
+                    t.noise_shown_notice.into()
                 });
                 self.rebuild();
             }
             Message::ToggleIdleOnly => {
+                let t = self.lang.strings();
                 self.idle_only = !self.idle_only;
                 self.notice = Some(if self.idle_only {
-                    format!("IDLE ONLY — NO USE IN {IDLE_MONTHS} MONTHS")
+                    t.idle_only_notice.into()
                 } else {
-                    "SHOWING ALL UNITS".into()
+                    t.all_units_notice.into()
                 });
                 self.rebuild();
             }
@@ -551,6 +595,7 @@ impl Application for App {
                 sources: &scan.sources,
                 tick: self.tick,
                 enriching: scan.enriching,
+                lang: self.lang,
             }
             .render(frame, area, &self.theme);
             return;
@@ -581,7 +626,7 @@ impl Application for App {
         HeaderBar {
             total: self.entries.len(),
             generated_at: self.generated_at,
-            title: "MACOS PACKAGE INVENTORY",
+            lang: self.lang,
         }
         .render(frame, head, &self.theme);
 
@@ -606,12 +651,14 @@ impl Application for App {
             &self.entries,
             &self.rows,
             self.stats_line(),
+            self.lang,
             &self.theme,
         );
 
         let record = DetailPanel {
             entry: self.selected_entry(),
             sources: &self.source_counts,
+            lang: self.lang,
         };
         if let Some(r) = record_area {
             record.render_side(frame, r, &self.theme);
@@ -621,13 +668,13 @@ impl Application for App {
             // With a side panel the record is already on screen, so Enter is a
             // no-op there; on a narrow terminal it still opens the modal.
             Mode::Detail if !side_by_side => record.render_modal(frame, body, &self.theme),
-            Mode::Help => HelpOverlay.render(frame, body, &self.theme),
+            Mode::Help => HelpOverlay { lang: self.lang }.render(frame, body, &self.theme),
             _ => {}
         }
 
         if self.mode == Mode::Search {
             self.search
-                .render(frame, foot, self.rows.len(), &self.theme);
+                .render(frame, foot, self.rows.len(), self.lang, &self.theme);
         } else {
             StatusBar {
                 mode: self.mode,
@@ -636,6 +683,7 @@ impl Application for App {
                 refreshing: self.refreshing,
                 tick: self.tick,
                 notice: self.notice.as_deref(),
+                lang: self.lang,
             }
             .render(frame, foot, &self.theme);
         }
@@ -1265,18 +1313,69 @@ mod render_tests {
                 .filter(|&x| buf[(x, y)].symbol() == "│")
                 .collect()
         };
-        // Rows 6..20 are inside both panels on this frame.
-        let reference = border_cols(7);
+        // Locate the panel body rows rather than hardcoding indices — the
+        // masthead's height is a layout constant that has already changed once.
+        let body_rows: Vec<u16> = (0..buf.area.height)
+            .filter(|&y| border_cols(y).len() >= 4)
+            .collect();
         assert!(
-            reference.len() >= 4,
-            "expected two panels' borders on row 7, found {reference:?}"
+            body_rows.len() > 8,
+            "expected a tall two-panel body, found {} rows with borders",
+            body_rows.len()
         );
-        for y in 7..20u16 {
+        let reference = border_cols(body_rows[0]);
+        for &y in &body_rows {
             assert_eq!(
                 border_cols(y),
                 reference,
                 "row {y} borders moved — a glyph width miscount shifted the layout"
             );
+        }
+    }
+
+    /// The masthead is a filled field: deep red, white text, with blank rows
+    /// above and below the title. Every cell of it must be painted, padding
+    /// rows included — an unpainted row would show the terminal background as
+    /// a gap straight through the bar.
+    #[test]
+    fn masthead_is_a_filled_field() {
+        use ratatui::style::Color;
+        let mut app = App::new(Some((sample(), None))).0;
+        app.width = 130;
+        let mut term =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(130, 30)).unwrap();
+        term.draw(|f| app.view(f)).unwrap();
+        let buf = term.backend().buffer().clone();
+
+        let band = Color::Rgb(0x6E, 0x0D, 0x10);
+        // The band is inset by the outer margin, so it spans the content
+        // columns rather than the full frame — the margin cells stay base.
+        let inner = MARGIN_X..(buf.area.width - MARGIN_X);
+        let band_rows: Vec<u16> = (0..buf.area.height)
+            .filter(|&y| inner.clone().all(|x| buf[(x, y)].bg == band))
+            .collect();
+        assert_eq!(
+            band_rows.len(),
+            5,
+            "expected 2 padding + 1 title + 2 padding fully filled rows, got {band_rows:?}"
+        );
+
+        // The title sits on the middle row, in white.
+        let title_row = band_rows[2];
+        let text: String = (0..buf.area.width)
+            .map(|x| buf[(x, title_row)].symbol())
+            .collect();
+        assert!(text.contains("SYSAPP"), "title row is {text:?}");
+        let title_x = text.find("SYSAPP").unwrap() as u16;
+        assert_eq!(
+            buf[(title_x, title_row)].fg,
+            Color::Rgb(0xFF, 0xFF, 0xFF),
+            "title must be white on the band"
+        );
+        // Padding rows carry the field but no text.
+        for &y in [band_rows[0], band_rows[4]].iter() {
+            let row: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+            assert!(row.trim().is_empty(), "padding row {y} is not blank: {row:?}");
         }
     }
 

@@ -33,7 +33,6 @@ pub struct Theme {
     pub fg_default: Color,
     pub fg_muted: Color,
     pub fg_emphasis: Color,
-    pub fg_on_selection: Color,
 
     // The single accent — hazard red
     pub accent: Color,
@@ -43,6 +42,10 @@ pub struct Theme {
 
     // The one permitted green (activity meter only)
     pub meter: Color,
+
+    // Masthead band field and its text.
+    pub band: Color,
+    pub fg_on_band: Color,
 }
 
 impl Theme {
@@ -71,10 +74,11 @@ impl Theme {
             fg_default: Color::Rgb(0xEA, 0xEA, 0xEA),
             fg_muted: Color::Rgb(0x6E, 0x6E, 0x6E),
             fg_emphasis: Color::Rgb(0xFF, 0xFF, 0xFF),
-            fg_on_selection: Color::Rgb(0x0A, 0x0A, 0x0A),
             accent: Color::Rgb(0xE6, 0x19, 0x19),
             rule: Color::Rgb(0x3A, 0x3A, 0x3A),
             meter: Color::Rgb(0x4A, 0xF6, 0x26),
+            band: Color::Rgb(0x6E, 0x0D, 0x10),
+            fg_on_band: Color::Rgb(0xFF, 0xFF, 0xFF),
         }
     }
 
@@ -88,10 +92,11 @@ impl Theme {
             fg_default: Color::Gray,
             fg_muted: Color::DarkGray,
             fg_emphasis: Color::White,
-            fg_on_selection: Color::Black,
             accent: Color::Red,
             rule: Color::DarkGray,
             meter: Color::Green,
+            band: Color::Red,
+            fg_on_band: Color::White,
         }
     }
 
@@ -105,10 +110,11 @@ impl Theme {
             fg_default: Color::Reset,
             fg_muted: Color::Reset,
             fg_emphasis: Color::Reset,
-            fg_on_selection: Color::Reset,
             accent: Color::Reset,
             rule: Color::Reset,
             meter: Color::Reset,
+            band: Color::Reset,
+            fg_on_band: Color::Reset,
         }
     }
 
@@ -205,18 +211,24 @@ impl Theme {
         Style::default().fg(self.fg_default).bg(self.bg_overlay)
     }
 
+    /// Masthead band: deep red field, white text.
+    ///
+    /// Distinct from `accent` — a full-width bar of hazard red at maximum
+    /// chroma dominates the screen and fights the data. The band is the darker
+    /// oxide; hazard red stays reserved for marks and cursors, where being
+    /// loud is the point.
+    pub fn masthead(&self) -> Style {
+        Style::default()
+            .fg(self.fg_on_band)
+            .bg(self.band)
+            .add_modifier(Modifier::BOLD)
+    }
+
     /// The one green thing in the entire interface.
     pub fn meter_style(&self) -> Style {
         Style::default().fg(self.meter).bg(self.bg_base)
     }
 
-    /// Status bar: inverted band, brutalist solid block.
-    pub fn status_band(&self) -> Style {
-        Style::default()
-            .fg(self.fg_on_selection)
-            .bg(self.accent)
-            .add_modifier(Modifier::BOLD)
-    }
 
 }
 

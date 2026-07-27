@@ -10,6 +10,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use crate::tui::i18n::Lang;
 use crate::tui::theme::Theme;
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -27,11 +28,13 @@ pub struct ScanningScreen<'a> {
     pub tick: usize,
     /// Set once scanning finishes and enrichment begins.
     pub enriching: bool,
+    pub lang: Lang,
 }
 
 impl ScanningScreen<'_> {
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let spin = SPINNER[self.tick % SPINNER.len()];
+        let t = self.lang.strings();
 
         let mut lines = vec![
             Line::from(vec![
@@ -45,18 +48,18 @@ impl ScanningScreen<'_> {
                 theme.rule_style(),
             )),
             Line::from(vec![
-                Span::styled("[ INITIAL INVENTORY ]", theme.accented()),
-                Span::styled("  NO SNAPSHOT — FULL SCAN REQUIRED", theme.base()),
+                Span::styled(t.initial_inventory, theme.accented()),
+                Span::styled(format!("  {}", t.no_snapshot), theme.base()),
             ]),
             Line::from(Span::styled("", theme.base())),
         ];
 
         for (name, state) in self.sources {
             let (mark, text, style) = match state {
-                SourceState::Pending => (spin, "SCANNING".to_string(), theme.accented()),
-                SourceState::Done(n) => ("▪", format!("{n} UNITS"), theme.base()),
+                SourceState::Pending => (spin, t.scanning.to_string(), theme.accented()),
+                SourceState::Done(n) => ("▪", format!("{n} {}", t.units), theme.base()),
                 SourceState::Skipped(why) => {
-                    ("✗", format!("SKIPPED — {why}"), theme.muted())
+                    ("✗", format!("{} — {why}", t.skipped), theme.muted())
                 }
             };
             let mut spans = vec![
@@ -67,7 +70,7 @@ impl ScanningScreen<'_> {
             // brew is the reason a cold scan takes a minute and a half; saying
             // so stops it reading as a hang.
             if *name == "brew" && matches!(state, SourceState::Pending) {
-                spans.push(Span::styled("  (slowest source, ~40s)", theme.muted()));
+                spans.push(Span::styled(format!("  {}", t.slowest_source), theme.muted()));
             }
             lines.push(Line::from(spans));
         }
@@ -76,12 +79,12 @@ impl ScanningScreen<'_> {
         lines.push(if self.enriching {
             Line::from(vec![
                 Span::styled(format!(" {spin} "), theme.accented()),
-                Span::styled("ENRICHING", theme.heading()),
-                Span::styled("  detecting languages, reading usage history", theme.muted()),
+                Span::styled(t.enriching, theme.heading()),
+                Span::styled(format!("  {}", t.enriching_detail), theme.muted()),
             ])
         } else {
             Line::from(Span::styled(
-                " Results are cached — the next launch opens instantly.",
+                format!(" {}", t.cached_next_launch),
                 theme.muted(),
             ))
         });

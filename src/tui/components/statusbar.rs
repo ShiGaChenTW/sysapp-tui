@@ -8,22 +8,29 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use crate::tui::i18n::Lang;
 use crate::tui::message::Mode;
 use crate::tui::theme::Theme;
 
 /// Braille dots — the default modern spinner (tui-design §5).
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-const KEYS: &[(&str, &str)] = &[
-    ("j/k", "MOVE"),
-    ("/", "FILTER"),
-    ("p", "NOISE"),
-    ("s", "IDLE"),
-    ("1-6", "SORT"),
-    ("r", "RESCAN"),
-    ("?", "KEYS"),
-    ("q", "QUIT"),
-];
+/// Key hints, built per language. The key itself never translates — `j` is
+/// `j` on every keyboard — only what it does.
+fn keys(lang: Lang) -> [(&'static str, &'static str); 9] {
+    let t = lang.strings();
+    [
+        ("j/k", t.k_move),
+        ("/", t.k_filter),
+        ("p", t.k_noise),
+        ("s", t.k_idle),
+        ("1-6", t.k_sort),
+        ("r", t.k_rescan),
+        ("L", lang.other_name()),
+        ("?", t.k_keys),
+        ("q", t.k_quit),
+    ]
+}
 
 pub struct StatusBar<'a> {
     pub mode: Mode,
@@ -32,6 +39,7 @@ pub struct StatusBar<'a> {
     pub refreshing: bool,
     pub tick: usize,
     pub notice: Option<&'a str>,
+    pub lang: Lang,
 }
 
 impl StatusBar<'_> {
@@ -40,16 +48,17 @@ impl StatusBar<'_> {
         // which outranks the static key hints.
         let mut spans = Vec::new();
 
+        let t = self.lang.strings();
         if self.refreshing {
             spans.push(Span::styled(
-                format!(" {} RESCANNING", SPINNER[self.tick % SPINNER.len()]),
+                format!(" {} {}", SPINNER[self.tick % SPINNER.len()], t.rescanning),
                 theme.accented(),
             ));
-            spans.push(Span::styled("  keys still live", theme.muted()));
+            spans.push(Span::styled(format!("  {}", t.keys_still_live), theme.muted()));
         } else if let Some(notice) = self.notice {
             spans.push(Span::styled(format!(" {notice}"), theme.accented()));
         } else {
-            for (key, label) in KEYS {
+            for (key, label) in keys(self.lang) {
                 spans.push(Span::styled(format!(" [{key}]"), theme.accented()));
                 spans.push(Span::styled(format!(" {label} "), theme.muted()));
             }
@@ -61,7 +70,7 @@ impl StatusBar<'_> {
         // must survive a notice taking over the left side.
         if self.total > 0 {
             let pos = self.position.map(|i| i + 1).unwrap_or(0);
-            let mode = self.mode.label();
+            let mode = self.mode.label(self.lang);
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     format!("{mode}  {pos}/{} ", self.total),
@@ -92,8 +101,8 @@ mod tests {
     fn footer_keys_are_bound() {
         use crate::tui::keymap::translate;
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        for (key, _) in KEYS {
-            let ch = match *key {
+        for (key, _) in keys(Lang::ZhHant) {
+            let ch = match key {
                 "j/k" => 'j',
                 "1-6" => '1',
                 k => k.chars().next().unwrap(),

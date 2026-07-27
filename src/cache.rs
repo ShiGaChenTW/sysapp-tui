@@ -17,6 +17,7 @@ use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
 use crate::model::AppEntry;
+use crate::tui::i18n::Lang;
 
 /// Bump whenever `AppEntry` or anything it contains changes shape.
 ///
@@ -36,20 +37,21 @@ pub struct Snapshot {
 impl Snapshot {
     #[cfg(test)]
     fn age_label(&self) -> String {
-        age_label(self.generated_at)
+        age_label(self.generated_at, Lang::En)
     }
 }
 
 /// Human-readable age, for the header. Deliberately coarse — the user needs
 /// "is this roughly current", not a precise duration. Clamped at zero so a
 /// backwards clock jump cannot render a negative age.
-pub fn age_label(generated_at: DateTime<Local>) -> String {
+pub fn age_label(generated_at: DateTime<Local>, lang: Lang) -> String {
+    let t = lang.strings();
     let secs = (Local::now() - generated_at).num_seconds().max(0);
     match secs {
-        s if s < 90 => "JUST NOW".into(),
-        s if s < 3600 => format!("{}M AGO", s / 60),
-        s if s < 172_800 => format!("{}H AGO", s / 3600),
-        s => format!("{}D AGO", s / 86_400),
+        s if s < 90 => t.just_now.into(),
+        s if s < 3600 => format!("{}{}", s / 60, t.minutes_ago),
+        s if s < 172_800 => format!("{}{}", s / 3600, t.hours_ago),
+        s => format!("{}{}", s / 86_400, t.days_ago),
     }
 }
 

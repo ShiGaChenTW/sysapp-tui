@@ -15,6 +15,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Cell, Padding, Paragraph, Row
 use unicode_width::UnicodeWidthStr;
 
 use crate::model::AppEntry;
+use crate::tui::i18n::Lang;
 use crate::tui::message::Column;
 use crate::tui::theme::Theme;
 
@@ -83,6 +84,7 @@ impl DataGrid {
         entries: &[AppEntry],
         rows: &[usize],
         stats: Line<'_>,
+        lang: Lang,
         theme: &Theme,
     ) {
         // Paint the panel interior before anything else. Cell styles cover
@@ -92,7 +94,7 @@ impl DataGrid {
             .borders(Borders::ALL)
             .border_type(BorderType::Plain)
             .border_style(theme.panel_border())
-            .title(Span::styled(" INVENTORY ", theme.panel_title()))
+            .title(Span::styled(lang.strings().panel_inventory, theme.panel_title()))
             .padding(Padding::new(1, 1, 1, 0))
             .style(theme.base());
         let inner = block.inner(area);
@@ -112,10 +114,11 @@ impl DataGrid {
         frame.render_widget(Paragraph::new(stats).style(theme.base()), stats_area);
 
         if rows.is_empty() {
+            let t = lang.strings();
             let msg = Line::from(vec![
                 Span::styled(" >>> ", theme.accented()),
-                Span::styled("NO UNITS MATCH FILTER", theme.heading()),
-                Span::styled("   Esc to clear", theme.muted()),
+                Span::styled(t.no_matches, theme.heading()),
+                Span::styled(format!("   {}", t.esc_to_clear), theme.muted()),
             ]);
             frame.render_widget(Paragraph::new(msg).style(theme.base()), grid);
             return;
@@ -128,7 +131,7 @@ impl DataGrid {
         //   116 - 4 outer margin - 1 panel gap - 36 record = 75 grid
         //   75 - 2 border - 2 padding = 71 inner
         //   71 - 1 highlight symbol - 5 inter-column gaps = 65 content
-        // The fixed columns take 48, leaving 17 for NAME. Exceed the budget
+        // The fixed columns take 49, leaving 16 for NAME. Exceed the budget
         // and ratatui silently clips the rightmost headers instead of
         // reporting anything — `columns_fit_at_minimum_width` guards it.
         let widths = [
@@ -136,7 +139,7 @@ impl DataGrid {
             C::Length(7),    // SRC        — "PKGUTIL"
             C::Length(10),   // LANG       — "JavaScript"
             C::Length(10),   // VER
-            C::Length(11),   // INSTALLED  — the "5·INSTALLED" header itself
+            C::Length(12),   // INSTALLED  — "5·INSTALLED▲" with the sort arrow
             C::Length(10),   // USAGE      — the "2026-07-20" fallback value
         ];
 
@@ -154,11 +157,11 @@ impl DataGrid {
                         format!(
                             "{}·{}{}",
                             i + 1,
-                            col.label(),
+                            col.label(lang),
                             if self.sort_asc { "▲" } else { "▼" }
                         )
                     } else {
-                        format!("{}·{}", i + 1, col.label())
+                        format!("{}·{}", i + 1, col.label(lang))
                     };
                     Cell::from(text).style(if active {
                         theme.column_header_active()
