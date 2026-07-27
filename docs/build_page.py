@@ -12,7 +12,7 @@ OUT = pathlib.Path("/Users/scottchen/Documents/20_Projects/Project_sysapp-tui/do
 
 TABS = [
     ("browse",   "BROWSE",   "909 units, sorted by real invocation count. The meter column is the only place colour carries data."),
-    ("category", "CATEGORY", "One press of <code>c</code> narrows to a category. Filters compose — the noise filter is still on underneath."),
+    ("category", "CATEGORY", "One press of <code>c</code> narrows to a category. Filters compose — the system-item filter is still on underneath."),
     ("idle",     "IDLE",     "Only units with no evidence of use — zero shell invocations and no recent open."),
     ("detail",   "RECORD",   "Captured at 100 columns: the record becomes a modal and the grid drops to its compact column set rather than clipping headers. The source cards collapse the overflow into <code>+1</code>."),
     ("help",     "KEYS",     "Tier two of the help system. The footer carries what fits, this carries the rest."),
@@ -349,7 +349,7 @@ cd sysapp-tui &amp;&amp; cargo build --release</pre>
     <div class="key"><kbd>Enter</kbd><span>run it, after a y/N confirmation</span></div>
     <div class="key"><kbd>i / Tab</kbd><span>open unit record</span></div>
     <div class="key"><kbd>c / C</kbd><span>filter by category / assign one</span></div>
-    <div class="key"><kbd>p</kbd><span>show / hide packaging noise</span></div>
+    <div class="key"><kbd>p</kbd><span>show / hide system items</span></div>
     <div class="key"><kbd>s</kbd><span>only units with no evidence of use</span></div>
     <div class="key"><kbd>r</kbd><span>rescan in background</span></div>
     <div class="key"><kbd>?</kbd><span>key reference</span></div>

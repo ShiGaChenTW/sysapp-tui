@@ -182,7 +182,7 @@ pub struct App {
     /// permanent: one press of `p`, `s` or `L` replaced the key hints for the
     /// rest of the session.
     notice_until: Option<Instant>,
-    /// Hide packaging noise. On by default: 115 of 906 entries on a typical
+    /// Hide system items. On by default: 115 of 906 entries on a typical
     /// machine are pkgutil receipts that dilute every sort and search.
     hide_noise: bool,
     /// Show only units with no evidence of use.
@@ -480,7 +480,7 @@ impl App {
         self.search.matches(e)
     }
 
-    /// How many entries the noise filter is currently withholding. Shown in
+    /// How many entries the system-item filter is currently withholding. Shown in
     /// the header so the totals can never look inexplicably wrong.
     fn hidden_noise(&self) -> usize {
         if !self.hide_noise {
@@ -1480,7 +1480,7 @@ mod tests {
         assert!(a.notice.as_deref().unwrap_or_default().contains("FAILED"));
     }
 
-    /// Packaging noise is hidden by default, and the header is told how much
+    /// System items are hidden by default, and the header is told how much
     /// is being withheld so the totals stay explicable.
     #[test]
     fn noise_is_hidden_by_default_and_toggles() {

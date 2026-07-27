@@ -87,7 +87,7 @@ old the data is (`SNAPSHOT 2H AGO`, or `LIVE SCAN` after a rescan).
 | `Esc` | Cancel search / close overlay |
 | `c` | Cycle the category filter |
 | `C` | Assign a category to the selected unit |
-| `p` | Show/hide packaging noise (pkgutil receipts, `/System/` bundles) |
+| `p` | Show/hide system items (pkgutil receipts, `/System/` bundles) |
 | `s` | Show only units with no evidence of use |
 | `r` | Rescan in the background — the interface stays live |
 | `?` | Toggle the key reference overlay |
@@ -139,7 +139,7 @@ label: a wrong category is worse than an honest blank, because you cannot tell
 the two apart once it is on screen.
 
 `c` cycles the filter through the categories actually present in the inventory,
-composing with the search and noise filters rather than replacing them. `C`
+composing with the search and system-item filters rather than replacing them. `C`
 assigns a category to the selected unit — any name works, including ones not in
 the built-in ten — and the override is written to
 `~/.config/sysapp-tui/categories.json`, so it survives a rescan. Committing an

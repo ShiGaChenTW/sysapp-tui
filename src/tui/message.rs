@@ -169,7 +169,7 @@ pub enum Message {
     /// All sources reported; enrichment produced the final inventory.
     EnrichDone(Vec<AppEntry>),
 
-    /// Show/hide packaging noise (pkgutil receipts, `/System/` apps).
+    /// Show/hide system items (pkgutil receipts, `/System/` apps).
     ToggleNoise,
     /// Show only units with no evidence of use.
     ToggleIdleOnly,

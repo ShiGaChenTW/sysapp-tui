@@ -126,7 +126,7 @@ def to_html(grid):
 
 SHOTS = {}
 
-# 1. browse (default view, noise hidden)
+# 1. browse (default view, system items hidden)
 # Usage-sorted: the meters are the point of the column.
 SHOTS['browse'] = run(['6'], lambda p: 'USAGE ▼' in p)
 # 2. idle-only view
