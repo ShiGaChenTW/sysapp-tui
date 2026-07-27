@@ -683,13 +683,18 @@ mod tests {
         }
     }
 
+    /// `App::new` seeds `width` from the real terminal, so state tests must
+    /// pin it or their behaviour depends on whoever runs the suite — CI has no
+    /// tty and took the fallback, which silently changed what Enter does.
     fn app() -> App {
         let entries = vec![
             entry("charlie", 5, Source::Npm),
             entry("alpha", 100, Source::Homebrew),
             entry("bravo", 50, Source::Cargo),
         ];
-        App::new(Some((entries, None))).0
+        let mut a = App::new(Some((entries, None))).0;
+        a.width = 80; // narrow: the record is a modal, so Enter is meaningful
+        a
     }
 
     /// `update` hands back a `Command` for the runtime to execute. These tests
@@ -905,6 +910,25 @@ mod tests {
         assert!(a.rows.is_empty(), "recently used app must not be listed as idle");
     }
 
+
+    /// Enter opens the record only when it is not already on screen. This is
+    /// width-dependent, so both branches are pinned explicitly.
+    #[test]
+    fn enter_opens_the_record_only_when_it_is_hidden() {
+        let mut narrow = app();
+        narrow.width = SIDE_PANEL_MIN_WIDTH - 1;
+        send(&mut narrow, Message::DetailOpen);
+        assert_eq!(narrow.mode, Mode::Detail, "narrow: Enter must open the modal");
+
+        let mut wide = app();
+        wide.width = SIDE_PANEL_MIN_WIDTH;
+        send(&mut wide, Message::DetailOpen);
+        assert_eq!(
+            wide.mode,
+            Mode::Browse,
+            "wide: the record panel is already visible, so Enter must be inert"
+        );
+    }
 
     #[test]
     fn jump_messages_reach_both_ends() {
