@@ -73,6 +73,13 @@ pub fn load() -> Option<Snapshot> {
     if snapshot.version != SCHEMA_VERSION {
         return None;
     }
+    // An empty snapshot is never a legitimate scan of a real Mac — pkgutil
+    // alone always reports something. Treating it as "no cache" means a
+    // previously poisoned file heals itself on the next launch instead of
+    // showing an empty tool forever.
+    if snapshot.entries.is_empty() {
+        return None;
+    }
     Some(snapshot)
 }
 
@@ -82,6 +89,9 @@ pub fn load() -> Option<Snapshot> {
 /// leave a truncated snapshot behind — the rename is atomic within a
 /// filesystem, and the temp file is a sibling to guarantee that.
 pub fn save(entries: &[AppEntry]) -> Result<()> {
+    // Refuse at the boundary as well as at the call site: persisting an empty
+    // inventory would make every subsequent launch open instantly onto nothing.
+    anyhow::ensure!(!entries.is_empty(), "refusing to cache an empty inventory");
     let path = path().context("no cache directory on this platform")?;
     let dir = path.parent().context("cache path has no parent")?;
     std::fs::create_dir_all(dir)
@@ -158,6 +168,13 @@ mod tests {
         for bad in ["", "{", "null", r#"{"version":1}"#, "[1,2,3]"] {
             assert!(serde_json::from_str::<Snapshot>(bad).is_err(), "{bad:?}");
         }
+    }
+
+    /// A scan that produced nothing must never become the cached state.
+    #[test]
+    fn empty_inventory_is_never_persisted() {
+        let err = save(&[]).expect_err("must refuse");
+        assert!(err.to_string().contains("empty"), "{err}");
     }
 
     #[test]

@@ -8,9 +8,9 @@ use std::cell::RefCell;
 use std::cmp::Ordering;
 
 use ratatui::Frame;
-use ratatui::layout::Constraint;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState};
+use ratatui::layout::{Constraint as C, Layout, Rect};
+use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table, TableState};
 
 use unicode_width::UnicodeWidthStr;
 
@@ -71,52 +71,90 @@ impl DataGrid {
         }
     }
 
+    /// Draw the grid inside a titled panel.
+    ///
+    /// `stats` is the filter/sort summary shown as the panel's first line —
+    /// it belongs next to the data it describes rather than in the masthead.
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &self,
         frame: &mut Frame,
-        area: ratatui::layout::Rect,
+        area: Rect,
         entries: &[AppEntry],
         rows: &[usize],
+        stats: Line<'_>,
         theme: &Theme,
     ) {
+        // Paint the panel interior before anything else. Cell styles cover
+        // cells only; column gaps and short rows would otherwise expose the
+        // terminal background as vertical stripes.
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Plain)
+            .border_style(theme.panel_border())
+            .title(Span::styled(" INVENTORY ", theme.panel_title()))
+            .style(theme.base());
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        if inner.height < 2 {
+            return;
+        }
+
+        let [stats_area, _gap, grid] = Layout::vertical([
+            C::Length(1),
+            C::Length(1),
+            C::Min(1),
+        ])
+        .areas(inner);
+
+        frame.render_widget(Paragraph::new(stats).style(theme.base()), stats_area);
+
         if rows.is_empty() {
             let msg = Line::from(vec![
                 Span::styled(" >>> ", theme.accented()),
                 Span::styled("NO UNITS MATCH FILTER", theme.heading()),
-                Span::styled("  —  press Esc to clear", theme.muted()),
+                Span::styled("   Esc to clear", theme.muted()),
             ]);
-            frame.render_widget(Paragraph::new(msg).style(theme.base()), area);
+            frame.render_widget(Paragraph::new(msg).style(theme.base()), grid);
             return;
         }
 
+        // PATH is dropped from the grid: it is long, almost always elided, and
+        // shown in full in the record panel. Its screen budget buys legible
+        // columns for the fields that fit.
+        // Budget at the narrowest supported layout (96 cols): panel inner is
+        // 78 - 1 highlight symbol - 5 inter-column gaps = 72 for content.
+        // Fixed columns take 51, leaving 21 for NAME; anything more and
+        // ratatui silently clips the rightmost headers.
         let widths = [
-            Constraint::Ratio(3, 12), // NAME
-            Constraint::Ratio(1, 12), // SRC
-            Constraint::Ratio(1, 12), // LANG
-            Constraint::Ratio(1, 12), // VER
-            Constraint::Ratio(2, 12), // INSTALLED
-            Constraint::Ratio(2, 12), // USAGE
-            Constraint::Ratio(2, 12), // PATH
+            C::Min(18),      // NAME
+            C::Length(8),    // SRC        — "PKGUTIL" is the longest value
+            C::Length(11),   // LANG       — "JavaScript"
+            C::Length(11),   // VER
+            C::Length(11),   // INSTALLED  — "5·INSTALLED" header is 11
+            C::Length(10),   // USAGE      — "6·USAGE▼" header is 8
         ];
 
         let header = Row::new(
             Column::ALL
                 .iter()
+                .take(6)
                 .enumerate()
                 .map(|(i, col)| {
                     let active = *col == self.sort_col;
                     // The digit hint stays on every column, active or not —
-                    // dropping it from the sorted column hides the one binding
-                    // the user most likely wants to press again.
+                    // dropping it from the sorted column hides the binding the
+                    // user is most likely to press again.
                     let text = if active {
                         format!(
-                            " {}·{}{} ",
+                            "{}·{}{}",
                             i + 1,
                             col.label(),
                             if self.sort_asc { "▲" } else { "▼" }
                         )
                     } else {
-                        format!(" {}·{} ", i + 1, col.label())
+                        format!("{}·{}", i + 1, col.label())
                     };
                     Cell::from(text).style(if active {
                         theme.column_header_active()
@@ -125,7 +163,8 @@ impl DataGrid {
                     })
                 })
                 .collect::<Vec<_>>(),
-        );
+        )
+        .style(theme.base());
 
         let body: Vec<Row> = rows
             .iter()
@@ -134,11 +173,12 @@ impl DataGrid {
 
         let table = Table::new(body, widths)
             .header(header)
+            .style(theme.base())
             .row_highlight_style(theme.selection())
-            .highlight_symbol("▌");
+            .highlight_symbol(Span::styled("▌", theme.accented()));
 
         let mut state = self.state.borrow_mut();
-        frame.render_stateful_widget(table, area, &mut state);
+        frame.render_stateful_widget(table, grid, &mut state);
     }
 
     fn row<'a>(&self, e: &'a AppEntry, theme: &Theme) -> Row<'a> {
@@ -169,11 +209,11 @@ impl DataGrid {
             Cell::from(truncate(&e.name, 30)).style(theme.base()),
             Cell::from(e.source.to_string().to_uppercase()).style(theme.muted()),
             Cell::from(lang).style(theme.muted()),
-            Cell::from(e.version.as_deref().unwrap_or("—").to_string()).style(theme.muted()),
+            Cell::from(truncate(e.version.as_deref().unwrap_or("—"), 11)).style(theme.muted()),
             Cell::from(install).style(theme.muted()),
             Cell::from(usage).style(usage_style),
-            Cell::from(truncate(e.path.as_deref().unwrap_or("—"), 28)).style(theme.muted()),
         ])
+        .style(theme.base())
     }
 }
 

@@ -26,7 +26,6 @@ pub struct Theme {
 
     // Substrate
     pub bg_base: Color,
-    pub bg_surface: Color,
     pub bg_overlay: Color,
     pub bg_selection: Color,
 
@@ -67,9 +66,8 @@ impl Theme {
         Self {
             tier: Tier::TrueColor,
             bg_base: Color::Rgb(0x0A, 0x0A, 0x0A),
-            bg_surface: Color::Rgb(0x12, 0x12, 0x12),
             bg_overlay: Color::Rgb(0x1A, 0x1A, 0x1A),
-            bg_selection: Color::Rgb(0xE6, 0x19, 0x19),
+            bg_selection: Color::Rgb(0x2E, 0x14, 0x16),
             fg_default: Color::Rgb(0xEA, 0xEA, 0xEA),
             fg_muted: Color::Rgb(0x6E, 0x6E, 0x6E),
             fg_emphasis: Color::Rgb(0xFF, 0xFF, 0xFF),
@@ -85,9 +83,8 @@ impl Theme {
         Self {
             tier: Tier::Ansi16,
             bg_base: Color::Black,
-            bg_surface: Color::Black,
             bg_overlay: Color::Black,
-            bg_selection: Color::Red,
+            bg_selection: Color::DarkGray,
             fg_default: Color::Gray,
             fg_muted: Color::DarkGray,
             fg_emphasis: Color::White,
@@ -103,7 +100,6 @@ impl Theme {
         Self {
             tier: Tier::Mono,
             bg_base: Color::Reset,
-            bg_surface: Color::Reset,
             bg_overlay: Color::Reset,
             bg_selection: Color::Reset,
             fg_default: Color::Reset,
@@ -153,10 +149,15 @@ impl Theme {
         Style::default().fg(self.rule).bg(self.bg_base)
     }
 
-    /// Selected row. REVERSED is what makes this legible in mono.
+    /// Selected row.
+    ///
+    /// A filled accent bar across a full-width row reads as an alarm, not a
+    /// cursor — on a 7-column grid it floods a third of the screen. The
+    /// cursor is carried by a left marker plus weight instead, with a surface
+    /// tint for position. Mono keeps REVERSED, which is all it has.
     pub fn selection(&self) -> Style {
         let s = Style::default()
-            .fg(self.fg_on_selection)
+            .fg(self.fg_emphasis)
             .bg(self.bg_selection)
             .add_modifier(Modifier::BOLD);
         if self.tier == Tier::Mono {
@@ -169,17 +170,35 @@ impl Theme {
     /// Column header of the data grid.
     pub fn column_header(&self) -> Style {
         Style::default()
-            .fg(self.accent)
-            .bg(self.bg_surface)
+            .fg(self.fg_muted)
+            .bg(self.bg_base)
             .add_modifier(Modifier::BOLD)
     }
 
-    /// The sorted column, distinguished by weight as well as color.
+    /// The sorted column, marked by accent text rather than a filled block.
     pub fn column_header_active(&self) -> Style {
         Style::default()
-            .fg(self.fg_emphasis)
-            .bg(self.bg_selection)
+            .fg(self.accent)
+            .bg(self.bg_base)
             .add_modifier(Modifier::BOLD)
+    }
+
+    /// Panel chrome. Borders recede; the content is the interface.
+    pub fn panel_border(&self) -> Style {
+        Style::default().fg(self.rule).bg(self.bg_base)
+    }
+
+    /// Panel title, sitting on the border line.
+    pub fn panel_title(&self) -> Style {
+        Style::default()
+            .fg(self.fg_muted)
+            .bg(self.bg_base)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Section label inside a panel — `[ SOURCE ]`.
+    pub fn field_label(&self) -> Style {
+        Style::default().fg(self.accent).bg(self.bg_base)
     }
 
     pub fn overlay(&self) -> Style {
@@ -199,12 +218,6 @@ impl Theme {
             .add_modifier(Modifier::BOLD)
     }
 
-    pub fn status_band_idle(&self) -> Style {
-        Style::default()
-            .fg(self.fg_default)
-            .bg(self.bg_surface)
-            .add_modifier(Modifier::BOLD)
-    }
 }
 
 #[cfg(test)]

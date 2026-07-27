@@ -35,7 +35,7 @@ use crossterm::event::Event;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Paragraph};
 use tears::prelude::*;
 use tears::subscription::terminal::TerminalEvents;
 use tears::subscription::time::{Timer, TimerEvent};
@@ -59,6 +59,10 @@ const MIN_HEIGHT: u16 = 10;
 /// Braille spinner cadence (tui-design §5): fast enough to read as motion,
 /// slow enough not to burn a wake-up budget.
 const SPINNER_INTERVAL_MS: u64 = 120;
+
+/// Below this the grid and the record panel cannot both be legible, so the
+/// record falls back to a modal.
+const SIDE_PANEL_MIN_WIDTH: u16 = 96;
 
 /// How long without use before a unit counts as idle. Six months is long
 /// enough to survive a quarter of neglect but short enough to still flag
@@ -97,6 +101,40 @@ pub struct App {
     idle_only: bool,
     /// Cold-start scan progress. `None` once the inventory is ready.
     scan: Option<ScanProgress>,
+    /// Per-source totals for the record panel. Recomputed only when the
+    /// inventory itself changes — not on every keystroke.
+    source_counts: Vec<(String, usize)>,
+    /// Terminal width, so `update` can tell whether the record is already on
+    /// screen. Seeded from the real terminal and kept current by resize events;
+    /// without it, Enter would flip the mode label to DETAIL on a wide terminal
+    /// where the record panel is already visible and nothing would change.
+    width: u16,
+}
+
+/// Counts per source, descending. Sources with zero entries are dropped.
+fn source_counts(entries: &[AppEntry]) -> Vec<(String, usize)> {
+    use crate::model::Source;
+    const ORDER: [Source; 9] = [
+        Source::Homebrew,
+        Source::HomebrewCask,
+        Source::Applications,
+        Source::Cargo,
+        Source::Go,
+        Source::Npm,
+        Source::Pip,
+        Source::Gem,
+        Source::Pkgutil,
+    ];
+    let mut out: Vec<(String, usize)> = ORDER
+        .iter()
+        .map(|s| {
+            let n = entries.iter().filter(|e| &e.source == s).count();
+            (s.to_string().to_uppercase(), n)
+        })
+        .filter(|(_, n)| *n > 0)
+        .collect();
+    out.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    out
 }
 
 /// Per-source progress during a cold scan.
@@ -193,6 +231,37 @@ impl App {
         self.entries.iter().filter(|e| e.is_system_noise()).count()
     }
 
+    /// Filter and sort summary, shown as the grid panel's first line.
+    fn stats_line(&self) -> Line<'_> {
+        let mut spans = vec![
+            Span::styled(format!(" {}", self.rows.len()), self.theme.heading()),
+            Span::styled(" shown", self.theme.muted()),
+        ];
+        let hidden = self.hidden_noise();
+        if hidden > 0 {
+            spans.push(Span::styled(format!("   {hidden}"), self.theme.base()));
+            spans.push(Span::styled(" noise hidden", self.theme.muted()));
+        }
+        if self.idle_only {
+            spans.push(Span::styled("   IDLE ONLY", self.theme.accented()));
+        }
+        if !self.search.query().is_empty() {
+            spans.push(Span::styled(
+                format!("   /{}", self.search.query()),
+                self.theme.accented(),
+            ));
+        }
+        spans.push(Span::styled(
+            format!(
+                "   sorted by {} {}",
+                self.grid.sort_col.label(),
+                if self.grid.sort_asc { "▲" } else { "▼" }
+            ),
+            self.theme.muted(),
+        ));
+        Line::from(spans)
+    }
+
     fn render_too_small(&self, frame: &mut Frame, area: Rect) {
         let lines = vec![
             Line::from(Span::styled(" [ VIEWPORT UNDERSIZED ] ", self.theme.status_band())),
@@ -231,7 +300,10 @@ impl Application for App {
             hide_noise: true,
             idle_only: false,
             scan: None,
+            source_counts: Vec::new(),
+            width: crossterm::terminal::size().map(|(w, _)| w).unwrap_or(120),
         };
+        app.source_counts = source_counts(&app.entries);
         app.rebuild();
 
         // With no cache, open the UI immediately on a progress screen and run
@@ -259,6 +331,7 @@ impl Application for App {
                     None => Command::none(),
                 };
             }
+            Message::Terminal(Event::Resize(w, _)) => self.width = w,
             Message::Terminal(_) => {}
             Message::TerminalError(e) => {
                 // A dead input stream means the session is over; leaving the
@@ -295,9 +368,11 @@ impl Application for App {
             }
 
             Message::DetailOpen => {
-                // Nothing to inspect on an empty list — stay put rather than
-                // opening a blank record.
-                if self.selected_entry().is_some() {
+                // On a wide terminal the record panel is already on screen, so
+                // there is nothing to open — flipping the mode would only make
+                // the footer claim a state change that never happened.
+                let has_side_panel = self.width >= SIDE_PANEL_MIN_WIDTH;
+                if !has_side_panel && self.selected_entry().is_some() {
                     self.mode = Mode::Detail;
                 }
             }
@@ -317,10 +392,16 @@ impl Application for App {
                     Err(e) => Message::RefreshFailed(e),
                 });
             }
+            Message::RefreshDone(entries) if entries.is_empty() => {
+                // Same rule on the rescan path: keep the inventory we have.
+                self.refreshing = false;
+                self.notice = Some("RESCAN FOUND NOTHING — KEEPING PREVIOUS DATA".into());
+            }
             Message::RefreshDone(entries) => {
                 let anchor = self.selected_entry().map(|e| e.name.clone());
                 let count = entries.len();
                 self.entries = entries;
+                self.source_counts = source_counts(&self.entries);
                 self.generated_at = None; // freshly scanned — this is live data
                 self.refreshing = false;
                 self.notice = Some(format!("RESCAN COMPLETE — {count} UNITS"));
@@ -363,10 +444,16 @@ impl Application for App {
                 return Command::none();
             }
             Message::EnrichDone(entries) => {
-                if let Err(e) = crate::cache::save(&entries) {
+                // A scan that yielded nothing means every source failed, not
+                // that the machine has no packages. Surface it and leave the
+                // cache alone rather than persisting the failure.
+                if entries.is_empty() {
+                    self.notice = Some("SCAN FOUND NOTHING — press r to retry".into());
+                } else if let Err(e) = crate::cache::save(&entries) {
                     self.notice = Some(format!("CACHE WRITE FAILED — {e}"));
                 }
                 self.entries = entries;
+                self.source_counts = source_counts(&self.entries);
                 self.generated_at = None;
                 self.scan = None;
                 self.rebuild();
@@ -420,6 +507,12 @@ impl Application for App {
             return;
         }
 
+        // Paint the whole frame before drawing anything into it. Widget styles
+        // cover only the cells they write; column gaps, panel padding and short
+        // rows would otherwise expose the user's terminal background — which on
+        // a themed terminal shows up as vertical stripes through the grid.
+        frame.render_widget(Block::default().style(self.theme.base()), area);
+
         let [head, body, foot] = Layout::vertical([
             Constraint::Length(header::HEIGHT),
             Constraint::Min(1),
@@ -428,28 +521,44 @@ impl Application for App {
         .areas(area);
 
         HeaderBar {
-            entries: &self.entries,
-            shown: self.rows.len(),
-            sort_col: self.grid.sort_col,
-            sort_asc: self.grid.sort_asc,
-            query: self.search.query(),
+            total: self.entries.len(),
             generated_at: self.generated_at,
-            hidden_noise: self.hidden_noise(),
-            idle_only: self.idle_only,
+            title: "MACOS PACKAGE INVENTORY",
         }
         .render(frame, head, &self.theme);
 
-        // The grid always draws; overlays compose on top of it so the user
-        // keeps their spatial context.
-        self.grid
-            .render(frame, body, &self.entries, &self.rows, &self.theme);
+        // Master-detail when there is room for both; the record falls back to a
+        // modal on narrow terminals rather than squeezing the grid to nothing.
+        let side_by_side = area.width >= SIDE_PANEL_MIN_WIDTH;
+        let (grid_area, record_area) = if side_by_side {
+            let [g, r] =
+                Layout::horizontal([Constraint::Min(48), Constraint::Length(38)]).areas(body);
+            (g, Some(r))
+        } else {
+            (body, None)
+        };
+
+        self.grid.render(
+            frame,
+            grid_area,
+            &self.entries,
+            &self.rows,
+            self.stats_line(),
+            &self.theme,
+        );
+
+        let record = DetailPanel {
+            entry: self.selected_entry(),
+            sources: &self.source_counts,
+        };
+        if let Some(r) = record_area {
+            record.render_side(frame, r, &self.theme);
+        }
 
         match self.mode {
-            Mode::Detail => {
-                if let Some(entry) = self.selected_entry() {
-                    DetailPanel { entry }.render(frame, body, &self.theme);
-                }
-            }
+            // With a side panel the record is already on screen, so Enter is a
+            // no-op there; on a narrow terminal it still opens the modal.
+            Mode::Detail if !side_by_side => record.render_modal(frame, body, &self.theme),
             Mode::Help => HelpOverlay.render(frame, body, &self.theme),
             _ => {}
         }
@@ -693,6 +802,18 @@ mod tests {
         assert!(a.generated_at.is_none(), "rescanned data is live, not a snapshot");
     }
 
+    /// A rescan that returns nothing means every source failed; the previous
+    /// inventory must survive and the empty result must not be cached.
+    #[test]
+    fn empty_rescan_keeps_previous_inventory() {
+        let mut a = app();
+        send(&mut a, Message::RefreshStart);
+        send(&mut a, Message::RefreshDone(vec![]));
+        assert!(!a.refreshing);
+        assert_eq!(a.entries.len(), 3, "previous inventory retained");
+        assert!(a.notice.as_deref().unwrap_or_default().contains("NOTHING"));
+    }
+
     /// A failed rescan must keep the existing inventory on screen.
     #[test]
     fn failed_refresh_keeps_old_data() {
@@ -756,6 +877,7 @@ mod tests {
         send(&mut a, Message::ToggleIdleOnly);
         assert!(a.rows.is_empty(), "recently used app must not be listed as idle");
     }
+
 
     #[test]
     fn jump_messages_reach_both_ends() {
@@ -830,8 +952,10 @@ mod render_tests {
         let app = App::new(Some((sample(), None))).0;
         let out = draw(&app, 120, 24);
         banner("BROWSE 120x24", &out);
-        assert!(out.contains("SYSAPP"), "identity plate missing");
-        assert!(out.contains("[ INVENTORY ]"), "counters missing");
+        assert!(out.contains("SYSAPP"), "identity band missing");
+        assert!(out.contains("INVENTORY"), "grid panel title missing");
+        assert!(out.contains("RECORD"), "record panel missing at this width");
+        assert!(out.contains("shown"), "stats line missing");
         assert!(out.contains("NAME"), "column headers missing");
         assert!(out.contains("BROWSE"), "mode label missing from footer");
     }
@@ -865,14 +989,36 @@ mod render_tests {
         assert!(!out.contains("httpie"), "python entry should be filtered out");
     }
 
+    /// Wide terminals carry the record as a persistent side panel — no key
+    /// press required, and Enter must not replace it with a modal.
     #[test]
-    fn render_detail_120x24() {
+    fn render_record_side_panel_120x24() {
         let mut app = App::new(Some((sample(), None))).0;
-        let _ = app.update(Message::DetailOpen);
+        app.width = 120;
         let out = draw(&app, 120, 24);
-        banner("DETAIL OVERLAY 120x24", &out);
-        assert!(out.contains("UNIT RECORD"), "overlay title missing");
-        assert!(out.contains("INVOCATIONS"), "overlay fields missing");
+        banner("RECORD SIDE PANEL 120x24", &out);
+        assert!(out.contains("RECORD"), "record panel title missing");
+        assert!(out.contains("INVOCATIONS"), "record fields missing");
+        assert!(out.contains("SOURCES"), "source breakdown missing");
+
+        let _ = app.update(Message::DetailOpen);
+        let after = draw(&app, 120, 24);
+        assert_eq!(after, out, "Enter must be inert while the side panel is up");
+    }
+
+    /// Narrow terminals drop the side panel; Enter still opens the modal.
+    #[test]
+    fn render_record_modal_when_narrow() {
+        let mut app = App::new(Some((sample(), None))).0;
+        app.width = 80;
+        let plain = draw(&app, 80, 24);
+        assert!(!plain.contains("INVOCATIONS"), "no side panel at 80 cols");
+
+        let _ = app.update(Message::DetailOpen);
+        let out = draw(&app, 80, 24);
+        banner("RECORD MODAL 80x24", &out);
+        assert!(out.contains("RECORD"), "modal title missing");
+        assert!(out.contains("INVOCATIONS"), "modal fields missing");
     }
 
     #[test]
@@ -900,6 +1046,30 @@ mod render_tests {
         banner("UNDERSIZED 40x8", &out);
         assert!(out.contains("VIEWPORT UNDERSIZED"));
     }
+
+    /// Reproduces the reported artefact: with a non-black terminal background,
+    /// vertical stripes appear between columns. Cell styles paint cells; the
+    /// column gaps and any unwritten area belong to whatever is underneath.
+    #[test]
+    fn probe_unpainted_cells() {
+        let app = App::new(Some((sample(), None))).0;
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 24)).unwrap();
+        term.draw(|f| app.view(f)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut unpainted = 0;
+        let mut total = 0;
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                total += 1;
+                if buf[(x, y)].bg == ratatui::style::Color::Reset { unpainted += 1; }
+            }
+        }
+        println!("UNPAINTED CELLS: {unpainted}/{total} ({:.0}%)", 100.0 * unpainted as f64 / total as f64);
+        // Row 7 is inside the data grid — sample the column-gap columns.
+        let row: String = (0..60).map(|x| if buf[(x,7)].bg == ratatui::style::Color::Reset {'.'} else {'#'}).collect();
+        println!("ROW 7 PAINT MAP (. = shows terminal bg): {row}");
+    }
+
 
     #[test]
     fn render_cold_start_scan_screen() {

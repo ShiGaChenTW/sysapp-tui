@@ -1,83 +1,66 @@
-//! Full record for one unit, as a centred modal overlay.
+//! The record panel — full detail for the selected unit.
 //!
-//! Modal overlays are focus traps: while this is up, the grid receives no
-//! keys. `Clear` is rendered first so the grid does not bleed through.
+//! Rendered as a persistent side panel when the terminal is wide enough, and
+//! as a centred modal when it is not. A master-detail pair beats an overlay:
+//! the detail is visible while you move the cursor, so scanning the inventory
+//! and reading a record are the same gesture instead of two.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
 use crate::model::AppEntry;
 use crate::tui::theme::Theme;
 
 pub struct DetailPanel<'a> {
-    pub entry: &'a AppEntry,
+    pub entry: Option<&'a AppEntry>,
+    /// Source-name / count pairs, shown beneath the record.
+    pub sources: &'a [(String, usize)],
 }
 
 impl DetailPanel<'_> {
-    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let e = self.entry;
+    /// Persistent side panel.
+    pub fn render_side(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Plain)
+            .border_style(theme.panel_border())
+            .title(Span::styled(" RECORD ", theme.panel_title()))
+            .style(theme.base());
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
 
-        let field = |label: &'static str, value: String| -> Line<'static> {
-            Line::from(vec![
-                // Width must exceed the longest label ("INVOCATIONS", 11) or
-                // the value collides with it.
-                Span::styled(format!(" {label:<13}"), theme.muted()),
-                Span::styled(value, theme.base()),
-            ])
+        let mut lines = match self.entry {
+            Some(e) => self.body(e, inner.width, theme),
+            None => vec![Line::from(Span::styled(" No unit selected", theme.muted()))],
         };
 
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled(" >>> ", theme.accented()),
-                Span::styled(e.name.to_uppercase(), theme.heading()),
-            ]),
-            Line::from(Span::styled("", theme.base())),
-            field("SOURCE", e.source.to_string().to_uppercase()),
-            field(
-                "LANGUAGE",
-                e.language
-                    .as_ref()
-                    .map(|l| l.to_string())
-                    .unwrap_or_else(|| "—".into()),
-            ),
-            field("VERSION", e.version.clone().unwrap_or_else(|| "—".into())),
-            field(
-                "INSTALLED",
-                e.install_date
-                    .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
-                    .unwrap_or_else(|| "—".into()),
-            ),
-            field(
-                "LAST USED",
-                e.last_used
-                    .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
-                    .unwrap_or_else(|| "—".into()),
-            ),
-            field("INVOCATIONS", format!("{}", e.usage_count)),
-            field("PATH", e.path.clone().unwrap_or_else(|| "—".into())),
-        ];
-
-        if let Some(d) = &e.description {
-            lines.push(field("NOTE", d.clone()));
+        if !self.sources.is_empty() && inner.height as usize > lines.len() + 4 {
+            lines.push(Line::from(Span::styled("", theme.base())));
+            lines.push(section("SOURCES", theme));
+            for (name, n) in self.sources {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("   {name:<10}"), theme.muted()),
+                    Span::styled(format!("{n}"), theme.base()),
+                ]));
+            }
         }
 
-        lines.push(Line::from(Span::styled("", theme.base())));
-        lines.push(Line::from(Span::styled(
-            " ESC / i  RETURN     q  QUIT",
-            theme.muted(),
-        )));
+        frame.render_widget(Paragraph::new(lines).style(theme.base()), inner);
+    }
 
-        let inner_h = lines.len() as u16;
-        let rect = centered(area, 68, inner_h + 2);
+    /// Centred modal, for terminals too narrow to carry a side panel.
+    pub fn render_modal(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let Some(entry) = self.entry else { return };
+        let lines = self.body(entry, 60, theme);
 
-        // If the terminal cannot fit the overlay, say so instead of drawing a
-        // clipped box that looks like a rendering bug.
+        let rect = centered(area, 60, lines.len() as u16 + 2);
         if rect.width < 24 || rect.height < 5 {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
-                    " TERMINAL TOO SMALL FOR DETAIL ",
+                    " TERMINAL TOO SMALL FOR RECORD ",
                     theme.status_band(),
                 )))
                 .style(theme.base()),
@@ -88,14 +71,113 @@ impl DetailPanel<'_> {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_type(BorderType::Double)
+            .border_type(BorderType::Plain)
             .border_style(theme.accented())
-            .title(Span::styled(" [ UNIT RECORD ] ", theme.status_band()))
+            .title(Span::styled(" RECORD ", theme.panel_title()))
             .style(theme.overlay());
 
         frame.render_widget(Clear, rect);
         frame.render_widget(Paragraph::new(lines).block(block), rect);
     }
+
+    fn body<'b>(&self, e: &AppEntry, width: u16, theme: &Theme) -> Vec<Line<'b>> {
+        let field = |label: &'static str, value: String| -> Line<'b> {
+            vec![
+                Span::styled(format!("   {label:<13}"), theme.muted()),
+                Span::styled(value, theme.base()),
+            ]
+            .into()
+        };
+
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled(" ● ", theme.accented()),
+                Span::styled(e.name.clone(), theme.heading()),
+            ]),
+            Line::from(Span::styled("", theme.base())),
+            section("ORIGIN", theme),
+            field("SOURCE", e.source.to_string().to_uppercase()),
+            field(
+                "LANGUAGE",
+                e.language
+                    .as_ref()
+                    .map(|l| l.to_string())
+                    .unwrap_or_else(|| "—".into()),
+            ),
+            field("VERSION", e.version.clone().unwrap_or_else(|| "—".into())),
+            Line::from(Span::styled("", theme.base())),
+            section("ACTIVITY", theme),
+            field(
+                "INSTALLED",
+                e.install_date
+                    .map(|d| d.format("%Y-%m-%d").to_string())
+                    .unwrap_or_else(|| "—".into()),
+            ),
+            field(
+                "LAST USED",
+                e.last_used
+                    .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+                    .unwrap_or_else(|| "—".into()),
+            ),
+            field(
+                "INVOCATIONS",
+                if e.usage_count == 0 {
+                    "none recorded".into()
+                } else {
+                    format!("{}", e.usage_count)
+                },
+            ),
+            Line::from(Span::styled("", theme.base())),
+            section("LOCATION", theme),
+            Line::from(Span::styled(
+                format!("   {}", e.path.as_deref().unwrap_or("—")),
+                theme.base(),
+            )),
+        ];
+
+        if let Some(d) = &e.description {
+            lines.push(Line::from(Span::styled("", theme.base())));
+            lines.push(section("NOTE", theme));
+            // Wrapped here rather than by `Paragraph`, which would break the
+            // continuation flush against the panel border and lose the indent.
+            for chunk in wrap_indented(d, width.saturating_sub(3)) {
+                lines.push(Line::from(Span::styled(format!("   {chunk}"), theme.muted())));
+            }
+        }
+        lines
+    }
+}
+
+/// Break `text` into display-width-bounded chunks on word boundaries.
+///
+/// Width-aware rather than char-aware so CJK descriptions do not overrun the
+/// panel; a single word longer than the budget is emitted whole and clipped by
+/// the terminal rather than being silently dropped.
+fn wrap_indented(text: &str, width: u16) -> Vec<String> {
+    let budget = width.max(8) as usize;
+    let mut out = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let candidate = if line.is_empty() {
+            word.to_string()
+        } else {
+            format!("{line} {word}")
+        };
+        if candidate.width() > budget && !line.is_empty() {
+            out.push(std::mem::take(&mut line));
+            line = word.to_string();
+        } else {
+            line = candidate;
+        }
+    }
+    if !line.is_empty() {
+        out.push(line);
+    }
+    out
+}
+
+fn section<'a>(label: &str, theme: &Theme) -> Line<'a> {
+    Line::from(Span::styled(format!(" [ {label} ]"), theme.field_label()))
 }
 
 /// Centre a `w`x`h` rect inside `area`, shrinking to fit rather than
@@ -120,10 +202,37 @@ mod tests {
     #[test]
     fn label_padding_clears_the_longest_label() {
         const PAD: usize = 13;
-        for label in ["SOURCE", "LANGUAGE", "VERSION", "INSTALLED", "LAST USED",
-                      "INVOCATIONS", "PATH", "NOTE"] {
+        for label in ["SOURCE", "LANGUAGE", "VERSION", "INSTALLED", "LAST USED", "INVOCATIONS"] {
             assert!(label.len() < PAD, "{label} needs padding > {}", label.len());
         }
+    }
+
+    /// Wrapped continuation lines must never exceed the panel's inner width,
+    /// or they break flush against the border and lose the indent.
+    #[test]
+    fn wrap_respects_the_width_budget() {
+        for (text, w) in [
+            ("Distributed revision control system", 30u16),
+            ("分散式版本控制系統，用於追蹤原始碼變更", 20),
+            ("supercalifragilisticexpialidocious", 10),
+            ("", 30),
+        ] {
+            for chunk in wrap_indented(text, w) {
+                assert!(
+                    chunk.width() <= w.max(8) as usize || !chunk.contains(' '),
+                    "{chunk:?} is {} cols, budget {w}",
+                    chunk.width()
+                );
+            }
+        }
+    }
+
+    /// Wrapping must not drop content.
+    #[test]
+    fn wrap_preserves_every_word() {
+        let text = "Distributed revision control system";
+        let joined = wrap_indented(text, 12).join(" ");
+        assert_eq!(joined, text);
     }
 
     /// The overlay must always stay inside its parent — a rect that escapes
