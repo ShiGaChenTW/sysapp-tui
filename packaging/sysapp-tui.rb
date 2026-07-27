@@ -20,10 +20,10 @@ class SysappTui < Formula
   on_macos do
     if Hardware::CPU.arm?
       url "https://github.com/ShiGaChenTW/sysapp-tui/releases/download/v#{version}/sysapp-tui-v#{version}-aarch64-apple-darwin.tar.gz"
-      sha256 "REPLACE_WITH_AARCH64_SHA256"
+      sha256 "3e8f19d3c1934751c649b8da0947c6a57b38fd5a58aa9bb7785f3d0c06579cdf"
     else
       url "https://github.com/ShiGaChenTW/sysapp-tui/releases/download/v#{version}/sysapp-tui-v#{version}-x86_64-apple-darwin.tar.gz"
-      sha256 "REPLACE_WITH_X86_64_SHA256"
+      sha256 "2068c8a8428ebadbaef6659c40dfc2d82f76c236ba70f2ebfed764c6bd9410a1"
     end
   end
 
