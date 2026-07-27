@@ -681,6 +681,39 @@ async fn rescan() -> Result<Vec<AppEntry>, String> {
 
 /// `snapshot` is `None` on a cold start: the UI opens on the progress screen
 /// and scans behind it.
+/// Restore the terminal and re-raise, for signals that would otherwise kill
+/// the process with raw mode and the alternate screen still in effect.
+///
+/// `ratatui::init()` installs a panic hook, but panics are the rare death.
+/// Closing the terminal window or dropping an SSH session sends SIGHUP, and
+/// `kill`/`pkill` sends SIGTERM — both left the shell with no echo, no line
+/// editing and no Ctrl-C until `stty sane`. SIGKILL cannot be caught and is
+/// out of scope.
+///
+/// The handler runs on a signal thread and only calls `ratatui::restore()`
+/// before re-raising with the default disposition, so the exit status still
+/// reports the signal.
+fn install_signal_restore() {
+    use signal_hook::consts::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
+    use signal_hook::iterator::Signals;
+
+    let Ok(mut signals) = Signals::new([SIGHUP, SIGTERM, SIGINT, SIGQUIT]) else {
+        // Losing the handler is not worth refusing to start over.
+        return;
+    };
+    std::thread::spawn(move || {
+        if let Some(sig) = signals.forever().next() {
+            ratatui::restore();
+            // Re-raise with the default handler so the parent shell sees the
+            // process die from the signal rather than exiting 0.
+            unsafe {
+                libc::signal(sig, libc::SIG_DFL);
+                libc::raise(sig);
+            }
+        }
+    });
+}
+
 pub async fn run(snapshot: Option<(Vec<AppEntry>, Option<DateTime<Local>>)>) -> Result<()> {
     // `ratatui::init` enters the alternate screen, enables raw mode, and
     // installs a panic hook that restores both — so a panic cannot leave the
@@ -691,7 +724,12 @@ pub async fn run(snapshot: Option<(Vec<AppEntry>, Option<DateTime<Local>>)>) -> 
     let frame_rate = FrameRate::new(NonZeroU32::new(30).expect("30 is non-zero"))
         .map_err(|e| anyhow!("invalid frame rate: {e}"))?;
 
-    let mut terminal = ratatui::init();
+    // `init` panics rather than returning when stdout is not a terminal, which
+    // surfaces as a raw Rust backtrace to anyone piping the binary or running
+    // it from cron.
+    let mut terminal = ratatui::try_init()
+        .map_err(|e| anyhow!("cannot start the interface: {e}. Is this a terminal?"))?;
+    install_signal_restore();
 
     let result = Runtime::<App>::new(snapshot, frame_rate)
         .run(&mut terminal)
@@ -1170,6 +1208,76 @@ mod render_tests {
         let out = draw(&mut app, 40, 8);
         banner("UNDERSIZED 40x8", &out);
         assert!(out.contains("VIEWPORT UNDERSIZED"));
+    }
+
+    /// Hostile names must not break the layout or reach the terminal as
+    /// control sequences. Package names are attacker-influenced in principle —
+    /// anyone can publish a cask, gem or npm package.
+    #[test]
+    fn hostile_names_do_not_corrupt_the_frame() {
+        let mk = |name: &str| AppEntry {
+            name: name.into(),
+            version: Some("1.0".into()),
+            source: Source::Homebrew,
+            language: Some(Language::Rust),
+            install_date: None,
+            last_used: None,
+            usage_count: 5,
+            path: Some("/tmp/x".into()),
+            description: None,
+        };
+        let hostile = vec![
+            mk("\u{1b}[31mRED\u{1b}[0m"),
+            mk("\u{1b}[2J\u{1b}[H cleared"),
+            mk("\u{1b}]0;PWNED\u{7} title"),
+            mk("bell\u{7}here"),
+            mk("tab\there"),
+            mk("line\nbreak"),
+            mk("日本語のとても長いアプリケーション名前です"),
+            mk("🎉👨‍👩‍👧‍👦🇹🇼"),
+            mk("\u{202e}RTL-override"),
+            mk("e\u{301}\u{301}combining"),
+            mk(&"A".repeat(10_000)),
+            mk(""),
+        ];
+        let mut app = App::new(Some((hostile, None))).0;
+        let out = draw(&mut app, 130, 24);
+        banner("HOSTILE NAMES 130x24", &out);
+
+        // No control character may survive into the buffer.
+        for (i, line) in out.lines().enumerate() {
+            assert!(
+                !line.chars().any(|c| c.is_control() && c != '\n'),
+                "line {i} carries a control char: {line:?}"
+            );
+        }
+        // Border alignment must be checked against buffer coordinates, not the
+        // stringified frame: one cell can hold a multi-char grapheme (a ZWJ
+        // emoji) or be a wide-glyph continuation, so neither `chars().count()`
+        // nor display width maps back to a column.
+        let mut term =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(130, 24)).unwrap();
+        term.draw(|f| app.view(f)).unwrap();
+        let buf = term.backend().buffer().clone();
+
+        let border_cols = |y: u16| -> Vec<u16> {
+            (0..buf.area.width)
+                .filter(|&x| buf[(x, y)].symbol() == "│")
+                .collect()
+        };
+        // Rows 6..20 are inside both panels on this frame.
+        let reference = border_cols(7);
+        assert!(
+            reference.len() >= 4,
+            "expected two panels' borders on row 7, found {reference:?}"
+        );
+        for y in 7..20u16 {
+            assert_eq!(
+                border_cols(y),
+                reference,
+                "row {y} borders moved — a glyph width miscount shifted the layout"
+            );
+        }
     }
 
     #[test]

@@ -70,8 +70,23 @@ pub fn load() -> Option<Snapshot> {
     load_from(&path()?)
 }
 
+/// A cache this large is not a snapshot this program wrote.
+///
+/// The real file is ~200 KB for 900 packages; 64 MB covers a machine with
+/// hundreds of thousands. Without the bound, `read_to_string` will happily
+/// pull a 500 MB file into memory (measured: 1.07 GB RSS) before serde
+/// rejects it, and a larger one scales straight to OOM.
+const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
+
 /// `load` against an explicit path, so tests never touch the real cache.
 fn load_from(path: &std::path::Path) -> Option<Snapshot> {
+    // Stat before opening. A fifo or device at this path would block
+    // `read_to_string` forever — before any UI exists, so the user sees a
+    // blank terminal with no message and no way to tell what is wrong.
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > MAX_CACHE_BYTES {
+        return None;
+    }
     let raw = std::fs::read_to_string(path).ok()?;
     let snapshot: Snapshot = serde_json::from_str(&raw).ok()?;
     if snapshot.version != SCHEMA_VERSION {
@@ -227,6 +242,35 @@ mod tests {
             load_from(s.path()).is_none(),
             "an empty snapshot must read as no cache so it self-heals"
         );
+    }
+
+    /// A fifo at the cache path must not block the process forever.
+    #[test]
+    #[cfg(unix)]
+    fn load_does_not_block_on_a_fifo() {
+        use std::os::unix::fs::FileTypeExt;
+        let s = Scratch::new("fifo");
+        let path = s.path();
+        let status = std::process::Command::new("mkfifo")
+            .arg(path)
+            .status()
+            .expect("mkfifo");
+        assert!(status.success());
+        assert!(std::fs::metadata(path).unwrap().file_type().is_fifo());
+
+        // Would hang indefinitely without the stat guard.
+        assert!(load_from(path).is_none(), "a fifo must read as no cache");
+    }
+
+    /// An implausibly large file must be rejected on sight, not read into
+    /// memory and then rejected by serde.
+    #[test]
+    fn load_rejects_an_oversized_file() {
+        let s = Scratch::new("huge");
+        let f = std::fs::File::create(s.path()).unwrap();
+        f.set_len(MAX_CACHE_BYTES + 1).unwrap();
+        drop(f);
+        assert!(load_from(s.path()).is_none());
     }
 
     #[test]
