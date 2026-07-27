@@ -11,10 +11,11 @@ SHOTS = json.load(open("shots.json"))
 OUT = pathlib.Path("/Users/scottchen/Documents/20_Projects/Project_sysapp-tui/docs/index.html")
 
 TABS = [
-    ("browse", "BROWSE", "906 units, sorted by real invocation count. The meter column is the only place colour carries data."),
-    ("idle",   "IDLE",   "Only units with no evidence of use — zero shell invocations and no recent open."),
-    ("detail", "RECORD", "One unit in full. Overlays are focus traps; the grid keeps its position underneath."),
-    ("help",   "KEYS",   "Tier two of the help system. The footer carries five keys, this carries the rest."),
+    ("browse",   "BROWSE",   "909 units, sorted by real invocation count. The meter column is the only place colour carries data."),
+    ("category", "CATEGORY", "One press of <code>c</code> narrows to a category. Filters compose — the noise filter is still on underneath."),
+    ("idle",     "IDLE",     "Only units with no evidence of use — zero shell invocations and no recent open."),
+    ("detail",   "RECORD",   "Captured at 100 columns: the record becomes a modal and the grid drops to its compact column set rather than clipping headers. The source cards collapse the overflow into <code>+1</code>."),
+    ("help",     "KEYS",     "Tier two of the help system. The footer carries what fits, this carries the rest."),
 ]
 
 def tabs_markup():
@@ -68,7 +69,7 @@ HTML = f"""<!doctype html>
 <meta name="description" content="Scans nine local package sources in one pass, detects language, analyses real usage. Opens in 10ms. Rust + ratatui on The Elm Architecture.">
 <meta name="color-scheme" content="dark">
 <meta property="og:title" content="sysapp-tui">
-<meta property="og:description" content="macOS system package scanner and TUI dashboard. 906 packages, nine sources, opens in 10ms.">
+<meta property="og:description" content="macOS system package scanner and TUI dashboard. 909 packages, nine sources, opens in 10ms.">
 <meta property="og:type" content="website">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%230A0A0A'/><rect x='2' y='3' width='12' height='2' fill='%23E61919'/><rect x='2' y='7' width='8' height='2' fill='%23EAEAEA'/><rect x='2' y='11' width='10' height='2' fill='%23EAEAEA'/></svg>">
 <style>
@@ -254,10 +255,10 @@ footer .sp{{flex:1}}
 <div class="bar"><div class="wrap barin">
   <b>SYSAPP<span class="mark">·</span>TUI</b>
   <span class="mark">®</span>
-  <span class="m hide">REV 0.2.0 / UNIT D-01</span>
+  <span class="m hide">REV 0.3.0 / UNIT D-01</span>
   <span class="sp"></span>
   <a href="https://github.com/ShiGaChenTW/sysapp-tui">SOURCE</a>
-  <a href="https://github.com/ShiGaChenTW/sysapp-tui/releases/tag/v0.2.0" class="hide">RELEASE</a>
+  <a href="https://github.com/ShiGaChenTW/sysapp-tui/releases/tag/v0.3.0" class="hide">RELEASE</a>
 </div></div>
 
 <header class="wrap hero">
@@ -279,7 +280,7 @@ footer .sp{{flex:1}}
   </div>
   <div class="metric">
     <div class="lab">Inventory</div>
-    <div class="val">906</div>
+    <div class="val">909</div>
     <div class="sub">packages on the test machine</div>
   </div>
   <div class="metric">
@@ -343,9 +344,11 @@ cd sysapp-tui &amp;&amp; cargo build --release</pre>
   <div class="keys">
     <div class="key"><kbd>j / k</kbd><span>move</span></div>
     <div class="key"><kbd>g / G</kbd><span>first / last</span></div>
-    <div class="key"><kbd>1 … 7</kbd><span>sort column, repeat to reverse</span></div>
+    <div class="key"><kbd>1 … 9</kbd><span>sort column, repeat to reverse</span></div>
     <div class="key"><kbd>/</kbd><span>live filter</span></div>
-    <div class="key"><kbd>Enter</kbd><span>open unit record</span></div>
+    <div class="key"><kbd>Enter</kbd><span>run it, after a y/N confirmation</span></div>
+    <div class="key"><kbd>i / Tab</kbd><span>open unit record</span></div>
+    <div class="key"><kbd>c / C</kbd><span>filter by category / assign one</span></div>
     <div class="key"><kbd>p</kbd><span>show / hide packaging noise</span></div>
     <div class="key"><kbd>s</kbd><span>only units with no evidence of use</span></div>
     <div class="key"><kbd>r</kbd><span>rescan in background</span></div>
@@ -391,7 +394,33 @@ cd sysapp-tui &amp;&amp; cargo build --release</pre>
       <code>eprintln!</code> output paint over live frames. Every fix carries a regression test.</p>
     </div>
     <div class="note">
-      <h3>[ 54 tests, no terminal required ]</h3>
+      <h3>[ The classifier was 23% right, measured ]</h3>
+      <p>v0.3 labels every unit GUI / TUI / CLI. The first design matched keywords in
+      the Homebrew description — <code>ncurses</code>, <code>terminal-based</code>, and so on.
+      It looked reasonable and it was wrong.</p>
+      <p class="m">Measured against the full local homebrew-core tap — 8,517 real
+      <code>desc</code> strings — plus the official 365-day install analytics, those keywords
+      matched 15 of 64 known TUI programs. The misses were the most-installed ones:
+      <code>fzf</code> (586,715 installs/yr) reads "Command-line fuzzy finder";
+      <code>glow</code> reads "Render markdown on the CLI" — it calls itself a CLI.
+      One keyword, <code>text-based interface</code>, appeared zero times in the entire corpus.
+      Bare <code>tui</code> matched "in<b>tui</b>tive" and mislabelled four pure CLI tools.
+      So the curated name list became primary and keywords the fallback, and anything
+      unmatched returns <code>—</code> rather than a guess.</p>
+    </div>
+    <div class="note">
+      <h3>[ A wrong label is worse than a blank ]</h3>
+      <p>The same run exposed the category fallback: 289 units were labelled
+      <em>Productivity</em>, of which 280 were simply every GUI app on the machine.</p>
+      <p class="m">The bucket carried no information — a dev toolchain sat in
+      <em>Uncategorized</em> while an unrelated app was confidently "productivity". The blanket
+      fallback was deleted. Uncategorized rose, which is the correct direction: you can see
+      what the tool does not know, and <kbd>C</kbd> lets you tell it. Every number here came
+      from re-running the binary against 909 real packages, not from the test suite — which
+      was fully green the whole time those 280 labels were wrong.</p>
+    </div>
+    <div class="note">
+      <h3>[ 182 tests, no terminal required ]</h3>
       <p><code>update</code> is a pure function of <code>(state, Message)</code> and touches no
       terminal. <code>view</code> is a pure function of state and mutates nothing.</p>
       <p class="m">So input handling and state transitions are testable without a tty, and layout
@@ -417,7 +446,7 @@ cd sysapp-tui &amp;&amp; cargo build --release</pre>
 </section>
 
 <footer><div class="wrap frow">
-  <span>SYSAPP<span class="mark">·</span>TUI <span class="mark">®</span> REV 0.2.0</span>
+  <span>SYSAPP<span class="mark">·</span>TUI <span class="mark">®</span> REV 0.3.0</span>
   <span>MIT</span>
   <span class="sp"></span>
   <a href="https://github.com/ShiGaChenTW/sysapp-tui">GITHUB</a>

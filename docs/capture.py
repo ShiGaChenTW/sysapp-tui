@@ -5,16 +5,22 @@ capture has to keep the SGR attributes rather than stripping them.
 """
 import os, pty, time, select, fcntl, termios, struct, re, sys, json, html
 
-BIN = '/opt/homebrew/bin/sysapp-tui'
-ROWS, COLS = 26, 118
+# The local release build, not the installed one: the page has to show the
+# version being shipped, and `brew install` lags a release by a tap update.
+BIN = '/Users/scottchen/Documents/20_Projects/Project_sysapp-tui/target/release/sysapp-tui'
+# Wide enough for the full nine-column tier (needs ~96 columns of grid) plus
+# the 36-column record panel. Below this the grid drops columns by design.
+ROWS, COLS = 30, 150
 
-def run(keys, stop_marker, settle=0.8, timeout=120):
+def run(keys, stop_marker, settle=0.8, timeout=120, cols=None):
     pid, fd = pty.fork()
     if pid == 0:
         os.environ['TERM'] = 'xterm-256color'
         os.environ['COLORTERM'] = 'truecolor'
+        os.environ['LANG'] = 'en_US.UTF-8'
         os.execv(BIN, ['sysapp-tui'])
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', ROWS, COLS, 0, 0))
+    width = cols or COLS
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', ROWS, width, 0, 0))
     t0 = time.time(); buf = b''; grabbed = None; ki = 0; last = 0
     booted = False; stable_at = None
     while time.time() - t0 < timeout:
@@ -40,10 +46,11 @@ def run(keys, stop_marker, settle=0.8, timeout=120):
     return grabbed or buf
 
 # ---- ANSI → styled cell grid ----------------------------------------------
-def to_grid(data):
+def to_grid(data, cols=None):
     txt = data.decode('utf8', 'replace')
     txt = txt.split('\x1b[?1049h', 1)[-1].split('\x1b[?1049l', 1)[0]
-    blank = lambda: [{'ch': ' ', 'fg': None, 'bg': None, 'b': False, 'd': False} for _ in range(COLS)]
+    width = cols or COLS
+    blank = lambda: [{'ch': ' ', 'fg': None, 'bg': None, 'b': False, 'd': False} for _ in range(width)]
     grid = [blank() for _ in range(ROWS)]
     r = c = 0
     cur = {'fg': None, 'bg': None, 'b': False, 'd': False}
@@ -80,7 +87,7 @@ def to_grid(data):
         if ch == '\n': r += 1; c = 0
         elif ch == '\r': c = 0
         elif ch >= ' ':
-            if 0 <= r < ROWS and 0 <= c < COLS:
+            if 0 <= r < ROWS and 0 <= c < width:
                 grid[r][c] = {'ch': ch, **cur}
             c += 1
     return grid
@@ -125,11 +132,22 @@ SHOTS['browse'] = run(['6'], lambda p: 'USAGE ▼' in p)
 # 2. idle-only view
 SHOTS['idle'] = run(['s'], lambda p: 'IDLE ONLY' in p)
 # 3. detail record
-SHOTS['detail'] = run(['6', '\r'], lambda p: 'INVOCATIONS' in p, settle=1.2)
-# 4. help overlay
+# `i`, never Enter: as of v0.3 Enter arms a launch and opens a confirmation.
+# Driving the capture with Enter would put the page's own screenshot script one
+# keypress away from running whatever happened to be selected.
+# Captured narrow on purpose. Past 116 columns the record is a permanent side
+# panel, so `i` is inert and the frame would be byte-identical to `browse`;
+# at 100 it is the modal, which also shows the grid dropping to its compact
+# column set rather than clipping headers.
+SHOTS['detail'] = run(['6', 'i'], lambda p: 'INVOCATIONS' in p, settle=1.2, cols=100)
+DETAIL_COLS = 100
+# 4. category filter — one press of `c` narrows to the first populated category
+SHOTS['category'] = run(['c'], lambda p: 'Development' in p, settle=1.2)
+# 5. help overlay
 SHOTS['help'] = run(['?'], lambda p: 'q / Ctrl-C' in p, settle=1.2)
 
-result = {k: to_html(to_grid(v)) for k, v in SHOTS.items()}
+result = {k: to_html(to_grid(v, DETAIL_COLS if k == 'detail' else None))
+          for k, v in SHOTS.items()}
 json.dump(result, open('shots.json', 'w'))
 for k, v in result.items():
     print(f"  {k:<8} {len(v):6} bytes html, {v.count(chr(10))+1} lines")
