@@ -2,6 +2,8 @@
 
 **macOS System Package Scanner & TUI Dashboard**
 
+**[→ Product page](https://shigachentw.github.io/sysapp-tui/)**
+
 `sysapp-tui` is a command-line tool that scans all installed packages, applications, and toolchains on macOS from eight different sources in a single pass, presenting the results in an interactive Terminal User Interface (TUI).
 
 ---

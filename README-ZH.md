@@ -2,6 +2,8 @@
 
 **macOS 全系統套件掃描器 & TUI 儀表板**
 
+**[→ 產品介紹頁](https://shigachentw.github.io/sysapp-tui/)**
+
 `sysapp-tui` 是一款命令列工具，能一次掃描 macOS 系統中來自八個不同來源的所有已安裝套件、應用程式與工具鏈，並以互動式終端介面（TUI）呈現。
 
 ---
