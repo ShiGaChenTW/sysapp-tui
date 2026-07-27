@@ -11,8 +11,6 @@
 #      the `sha256` lines below
 #   4. copy this file into the tap repo and push
 #
-# Until the tap exists, `brew install` is not available and the README points
-# users at a source build instead.
 class SysappTui < Formula
   desc "macOS system package scanner and TUI dashboard"
   homepage "https://github.com/ShiGaChenTW/sysapp-tui"
@@ -22,10 +20,10 @@ class SysappTui < Formula
   on_macos do
     if Hardware::CPU.arm?
       url "https://github.com/ShiGaChenTW/sysapp-tui/releases/download/v#{version}/sysapp-tui-v#{version}-aarch64-apple-darwin.tar.gz"
-      sha256 "REPLACE_WITH_AARCH64_SHA256"
+      sha256 "6d8eab96b23435d2013b6d15f5453ec5378ba364684c60b70196fc2f97ffe811"
     else
       url "https://github.com/ShiGaChenTW/sysapp-tui/releases/download/v#{version}/sysapp-tui-v#{version}-x86_64-apple-darwin.tar.gz"
-      sha256 "REPLACE_WITH_X86_64_SHA256"
+      sha256 "ac12125c328bad0085ae1d5a8212226c063e9f020041fc6f0101f77591535827"
     end
   end
 

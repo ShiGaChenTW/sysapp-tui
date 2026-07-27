@@ -21,7 +21,9 @@
 
 ### 透過 Homebrew
 
-尚未發布（追蹤於 SCO-236）。目前請由原始碼建置。
+```bash
+brew install ShiGaChenTW/tap/sysapp-tui
+```
 
 ### 從原始碼編譯
 

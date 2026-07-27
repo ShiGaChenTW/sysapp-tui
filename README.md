@@ -23,7 +23,9 @@
 
 ### Via Homebrew
 
-Not published yet — tracked as SCO-236. Build from source for now.
+```bash
+brew install ShiGaChenTW/tap/sysapp-tui
+```
 
 ### Build from source
 
