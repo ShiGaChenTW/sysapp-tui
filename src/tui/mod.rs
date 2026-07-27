@@ -1126,6 +1126,30 @@ mod render_tests {
     }
 
 
+    /// Regression guard for the background bleed: unpainted cells expose the
+    /// user's terminal background, which on a themed terminal appeared as
+    /// vertical stripes through the grid. This measured 44% before the fix.
+    #[test]
+    fn every_cell_is_painted() {
+        let mut app = App::new(Some((sample(), None))).0;
+        app.width = 130;
+        let mut term =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(130, 30)).unwrap();
+        term.draw(|f| app.view(f)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut unpainted = 0;
+        let total = (buf.area.width as usize) * (buf.area.height as usize);
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                if buf[(x, y)].bg == ratatui::style::Color::Reset {
+                    unpainted += 1;
+                }
+            }
+        }
+        println!("UNPAINTED: {unpainted}/{total}");
+        assert_eq!(unpainted, 0, "{unpainted} cells would leak the terminal background");
+    }
+
     #[test]
     fn render_cold_start_scan_screen() {
         // `None` flags = no cache, so the app opens on the progress screen.
