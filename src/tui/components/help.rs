@@ -61,24 +61,37 @@ impl HelpOverlay {
         let t = self.lang.strings();
         let entries = bindings(self.lang);
         let mut lines: Vec<Line> = Vec::with_capacity(entries.len() + 3);
+        let safe_height = area.height.saturating_sub(4);
+        let spacious_height = entries.len() as u16
+            + entries.iter().filter(|(key, _)| key.is_none()).count() as u16
+            + 5;
+        let spacious = spacious_height <= safe_height;
+        let overlay_base = theme.base().bg(theme.bg_overlay);
+        let overlay_muted = theme.muted().bg(theme.bg_overlay);
+        let overlay_heading = theme.heading().bg(theme.bg_overlay);
+        let overlay_accent = theme.accented().bg(theme.bg_overlay);
 
         for (key, desc) in &entries {
             match key {
                 None => {
-                    lines.push(Line::from(Span::styled("", theme.base())));
+                    if spacious {
+                        lines.push(Line::from(Span::styled("", overlay_base)));
+                    }
                     lines.push(Line::from(vec![
-                        Span::styled(" ▌", theme.accented()),
-                        Span::styled(desc.to_string(), theme.heading()),
+                        Span::styled(" ▌", overlay_accent),
+                        Span::styled(desc.to_string(), overlay_heading),
                     ]));
                 }
                 Some(k) => lines.push(Line::from(vec![
-                    Span::styled(format!("   {k:<12}"), theme.accented()),
-                    Span::styled(desc.to_string(), theme.base()),
+                    Span::styled(format!("   {k:<12}"), overlay_accent),
+                    Span::styled(desc.to_string(), overlay_base),
                 ])),
             }
         }
 
-        lines.push(Line::from(Span::styled("", theme.base())));
+        if spacious {
+            lines.push(Line::from(Span::styled("", overlay_base)));
+        }
         // Nine columns overrun the 62-column overlay on one line, so they wrap.
         // The digit comes from the enumeration of `Column::ALL` itself, which is
         // the same index `keymap` feeds to `from_index` — deriving it any other
@@ -94,20 +107,35 @@ impl HelpOverlay {
                 // CJK label would indent half as far as the English one.
                 Span::styled(
                     format!("   {}", i18n::pad(if row == 0 { t.h_columns } else { "" }, 12)),
-                    theme.muted(),
+                    overlay_muted,
                 ),
-                Span::styled(chunk.join("  "), theme.base()),
+                Span::styled(chunk.join("  "), overlay_base),
             ]));
         }
 
-        let rect = centered(area, 62, lines.len() as u16 + 2);
+        // Keep the modal visibly detached from the terminal edges. Previously
+        // the full-height help touched the top and bottom borders, making it
+        // read as a broken full-screen repaint rather than an overlay.
+        let content_fits_inset =
+            lines.len() as u16 + 2 <= area.height.saturating_sub(4) && area.width >= 28;
+        let safe_area = if content_fits_inset {
+            Rect {
+                x: area.x.saturating_add(2),
+                y: area.y.saturating_add(2),
+                width: area.width.saturating_sub(4),
+                height: area.height.saturating_sub(4),
+            }
+        } else {
+            area
+        };
+        let rect = centered(safe_area, 62, lines.len() as u16 + 2);
         if rect.width < 24 || rect.height < 5 {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     t.too_small_help,
                     theme.masthead(),
                 )))
-                .style(theme.base()),
+                .style(overlay_base),
                 area,
             );
             return;

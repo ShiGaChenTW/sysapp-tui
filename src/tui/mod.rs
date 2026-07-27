@@ -2200,6 +2200,63 @@ mod render_tests {
         assert!(out.contains("KEY REFERENCE"), "help title missing");
     }
 
+    /// The compact CJK help used to reach nearly edge-to-edge and its explicit
+    /// text span styles repainted strips with the base background. That made
+    /// the supposedly opaque modal look transparent and mottled.
+    #[test]
+    fn help_is_inset_and_has_a_solid_background() {
+        let mut app = App::new(Some((sample(), None)).into()).0;
+        app.width = 68;
+        app.lang = Lang::ZhHant;
+        app.theme = Theme::tactical();
+        let _ = app.update(Message::HelpToggle);
+
+        let mut term = Terminal::new(TestBackend::new(68, 46)).unwrap();
+        term.draw(|f| app.view(f)).unwrap();
+        let buf = term.backend().buffer().clone();
+
+        let top_left = (0..buf.area.height)
+            .find_map(|y| {
+                (0..buf.area.width)
+                    .find(|&x| buf[(x, y)].symbol() == "╔")
+                    .map(|x| (x, y))
+            })
+            .expect("help border");
+        let bottom_right = (0..buf.area.height)
+            .rev()
+            .find_map(|y| {
+                (0..buf.area.width)
+                    .rev()
+                    .find(|&x| buf[(x, y)].symbol() == "╝")
+                    .map(|x| (x, y))
+            })
+            .expect("help border");
+
+        assert!(top_left.0 >= 2 && top_left.1 >= 2, "overlay is not inset");
+        assert!(
+            bottom_right.0 + 2 < buf.area.width && bottom_right.1 + 2 < buf.area.height,
+            "overlay touches the terminal edge"
+        );
+        for y in (top_left.1 + 1)..bottom_right.1 {
+            for x in (top_left.0 + 1)..bottom_right.0 {
+                // TestBackend stores the continuation cell of a wide CJK
+                // glyph as a reset-style space. The terminal paints that cell
+                // as part of the preceding glyph, so it is not a real leak.
+                if x > top_left.0 + 1
+                    && unicode_width::UnicodeWidthStr::width(buf[(x - 1, y)].symbol()) == 2
+                {
+                    continue;
+                }
+                assert_eq!(
+                    buf[(x, y)].bg,
+                    app.theme.bg_overlay,
+                    "help background leaked at ({x}, {y}), symbol {:?}",
+                    buf[(x, y)].symbol()
+                );
+            }
+        }
+    }
+
     #[test]
     fn render_narrow_80x24() {
         let mut app = App::new(Some((sample(), None)).into()).0;
