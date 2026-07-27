@@ -46,6 +46,9 @@ pub struct Theme {
     // Masthead band field and its text.
     pub band: Color,
     pub fg_on_band: Color,
+
+    // Drop shadow cast by the cards.
+    pub shadow: Color,
 }
 
 impl Theme {
@@ -79,6 +82,7 @@ impl Theme {
             meter: Color::Rgb(0x4A, 0xF6, 0x26),
             band: Color::Rgb(0x6E, 0x0D, 0x10),
             fg_on_band: Color::Rgb(0xFF, 0xFF, 0xFF),
+            shadow: Color::Rgb(0x00, 0x00, 0x00),
         }
     }
 
@@ -97,6 +101,7 @@ impl Theme {
             meter: Color::Green,
             band: Color::Red,
             fg_on_band: Color::White,
+            shadow: Color::Black,
         }
     }
 
@@ -115,6 +120,7 @@ impl Theme {
             meter: Color::Reset,
             band: Color::Reset,
             fg_on_band: Color::Reset,
+            shadow: Color::Reset,
         }
     }
 
@@ -222,6 +228,17 @@ impl Theme {
             .fg(self.fg_on_band)
             .bg(self.band)
             .add_modifier(Modifier::BOLD)
+    }
+
+    /// Drop shadow beneath a card.
+    ///
+    /// Pure black against the near-black substrate — deliberately subtle. A
+    /// heavier shadow on a dark terminal reads as a rendering fault rather
+    /// than depth, and it degrades to nothing at the 16-colour and monochrome
+    /// tiers, which is the correct behaviour: depth is decoration, and the
+    /// interface must not depend on it.
+    pub fn shadow_style(&self) -> Style {
+        Style::default().bg(self.shadow)
     }
 
     /// The one green thing in the entire interface.

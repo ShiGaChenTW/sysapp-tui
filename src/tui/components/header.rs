@@ -15,9 +15,9 @@ use crate::cache;
 use crate::tui::i18n::Lang;
 use crate::tui::theme::Theme;
 
-/// Two blank rows inside the band, above and below the text, so the title
-/// sits in a field rather than being crushed against the panels.
-const BAND_PAD: u16 = 2;
+/// One blank row inside the band, above and below the text, so the title sits
+/// in a field rather than being crushed against the panels.
+const BAND_PAD: u16 = 1;
 
 /// The filled band (padding + text + padding) plus one blank row separating
 /// it from the panels below.

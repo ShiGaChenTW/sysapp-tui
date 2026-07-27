@@ -29,6 +29,7 @@ mod message;
 mod theme;
 
 use std::num::{NonZeroU32, NonZeroU64};
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Local};
@@ -57,6 +58,41 @@ use theme::Theme;
 /// rather than rendering something broken (tui-design §2, minimum size gate).
 const MIN_WIDTH: u16 = 60;
 const MIN_HEIGHT: u16 = 10;
+
+/// Reserve one row and one column of every card's area for its drop shadow,
+/// paint the shadow, and return the rect the card itself should occupy.
+///
+/// The shadow is an L along the right and bottom edges, offset by one cell so
+/// it reads as cast rather than as a border. It is taken out of the card's own
+/// allocation, so nothing else in the layout has to know about it.
+fn cast_shadow(frame: &mut Frame, area: Rect, theme: &Theme) -> Rect {
+    if area.width < 3 || area.height < 3 {
+        return area; // no room to spend on decoration
+    }
+    let card = Rect {
+        width: area.width - 1,
+        height: area.height - 1,
+        ..area
+    };
+    let right = Rect {
+        x: card.x + card.width,
+        y: card.y + 1,
+        width: 1,
+        height: card.height,
+    };
+    let bottom = Rect {
+        x: card.x + 1,
+        y: card.y + card.height,
+        width: card.width,
+        height: 1,
+    };
+    frame.render_widget(Block::default().style(theme.shadow_style()), right);
+    frame.render_widget(Block::default().style(theme.shadow_style()), bottom);
+    card
+}
+
+/// How long a footer notice stays up before the key hints return.
+const NOTICE_TTL: Duration = Duration::from_secs(4);
 
 /// Braille spinner cadence (tui-design §5): fast enough to read as motion,
 /// slow enough not to burn a wake-up budget.
@@ -108,8 +144,13 @@ pub struct App {
     refreshing: bool,
     /// Spinner frame, advanced by `Tick` while refreshing.
     tick: usize,
-    /// Transient one-line feedback (rescan finished, rescan failed).
+    /// Transient one-line feedback (rescan finished, filter toggled, language
+    /// switched). It occupies the footer, so it must give the key hints back.
     notice: Option<String>,
+    /// When the notice stops being shown. Without this every notice was
+    /// permanent: one press of `p`, `s` or `L` replaced the key hints for the
+    /// rest of the session.
+    notice_until: Option<Instant>,
     /// Hide packaging noise. On by default: 115 of 906 entries on a typical
     /// machine are pkgutil receipts that dilute every sort and search.
     hide_noise: bool,
@@ -230,6 +271,16 @@ impl App {
         self.grid.select(cursor);
     }
 
+    /// Show a transient message in the footer.
+    ///
+    /// Always use this rather than assigning `notice` directly — a notice with
+    /// no deadline never clears, and the footer never returns to showing the
+    /// keys (tui-design §3: toasts auto-dismiss).
+    fn notify(&mut self, message: impl Into<String>) {
+        self.notice = Some(message.into());
+        self.notice_until = Some(Instant::now() + NOTICE_TTL);
+    }
+
     /// Whether the record is rendered as a persistent side panel.
     ///
     /// The single source of truth for this question. `update` and `view` both
@@ -338,6 +389,7 @@ impl Application for App {
             refreshing: false,
             tick: 0,
             notice: None,
+            notice_until: None,
             hide_noise: true,
             idle_only: false,
             scan: None,
@@ -435,7 +487,7 @@ impl Application for App {
             Message::RefreshStart => {
                 // Ignore a second `r` while one rescan is already running —
                 // two concurrent brew queries would be slower than one.
-                if self.refreshing || self.scan.is_some() {
+                if self.refreshing || self.scan.is_some() || self.notice.is_some() {
                     return Command::none();
                 }
                 self.refreshing = true;
@@ -449,7 +501,7 @@ impl Application for App {
             Message::RefreshDone(entries) if entries.is_empty() => {
                 // Same rule on the rescan path: keep the inventory we have.
                 self.refreshing = false;
-                self.notice = Some(self.lang.strings().rescan_empty.into());
+                self.notify(self.lang.strings().rescan_empty);
             }
             Message::RefreshDone(entries) => {
                 let anchor = self.selected_entry().map(|e| e.name.clone());
@@ -458,26 +510,32 @@ impl Application for App {
                 self.source_counts = source_counts(&self.entries);
                 self.generated_at = None; // freshly scanned — this is live data
                 self.refreshing = false;
-                self.notice = Some(format!("{} — {count} {}", self.lang.strings().rescan_complete, self.lang.strings().units));
+                self.notify(format!("{} — {count} {}", self.lang.strings().rescan_complete, self.lang.strings().units));
                 // Filter and sort are preserved; only the underlying data moved.
                 self.rebuild_anchored(anchor);
             }
             Message::RefreshFailed(e) => {
                 // Keep the old inventory. Stale data beats an empty screen.
                 self.refreshing = false;
-                self.notice = Some(format!("{} — {e}", self.lang.strings().rescan_failed));
+                self.notify(format!("{} — {e}", self.lang.strings().rescan_failed));
             }
-            Message::Tick => self.tick = self.tick.wrapping_add(1),
+            Message::Tick => {
+                self.tick = self.tick.wrapping_add(1);
+                if self.notice_until.is_some_and(|t| Instant::now() >= t) {
+                    self.notice = None;
+                    self.notice_until = None;
+                }
+            }
 
             Message::CacheWriteFailed(e) => {
-                self.notice = Some(format!("{} — {e}", self.lang.strings().cache_write_failed));
+                self.notify(format!("{} — {e}", self.lang.strings().cache_write_failed));
             }
 
             Message::ToggleLanguage => {
                 self.lang = self.lang.toggled();
                 // The notice is written in the language just switched to, so
                 // it doubles as immediate confirmation the switch took effect.
-                self.notice = Some(self.lang.strings().app_subtitle.to_string());
+                self.notify(self.lang.strings().app_subtitle.to_string());
             }
 
             Message::SourceScanned(name, result) => {
@@ -513,7 +571,7 @@ impl Application for App {
                 // that the machine has no packages. Surface it and leave the
                 // cache alone rather than persisting the failure.
                 if entries.is_empty() {
-                    self.notice = Some(self.lang.strings().scan_empty.into());
+                    self.notify(self.lang.strings().scan_empty);
                 } else {
                     // Off the UI thread: `save` serialises ~900 entries and
                     // does a synchronous write, which would stall keystrokes
@@ -553,20 +611,20 @@ impl Application for App {
             Message::ToggleNoise => {
                 let t = self.lang.strings();
                 self.hide_noise = !self.hide_noise;
-                self.notice = Some(if self.hide_noise {
-                    t.noise_hidden_notice.into()
+                self.notify(if self.hide_noise {
+                    t.noise_hidden_notice
                 } else {
-                    t.noise_shown_notice.into()
+                    t.noise_shown_notice
                 });
                 self.rebuild();
             }
             Message::ToggleIdleOnly => {
                 let t = self.lang.strings();
                 self.idle_only = !self.idle_only;
-                self.notice = Some(if self.idle_only {
-                    t.idle_only_notice.into()
+                self.notify(if self.idle_only {
+                    t.idle_only_notice
                 } else {
-                    t.all_units_notice.into()
+                    t.all_units_notice
                 });
                 self.rebuild();
             }
@@ -623,6 +681,7 @@ impl Application for App {
         ])
         .areas(area);
 
+        let head = cast_shadow(frame, head, &self.theme);
         HeaderBar {
             total: self.entries.len(),
             generated_at: self.generated_at,
@@ -645,6 +704,7 @@ impl Application for App {
             (body, None)
         };
 
+        let grid_area = cast_shadow(frame, grid_area, &self.theme);
         self.grid.render(
             frame,
             grid_area,
@@ -661,6 +721,7 @@ impl Application for App {
             lang: self.lang,
         };
         if let Some(r) = record_area {
+            let r = cast_shadow(frame, r, &self.theme);
             record.render_side(frame, r, &self.theme);
         }
 
@@ -699,7 +760,7 @@ impl Application for App {
                 Err(e) => Message::TerminalError(e.to_string()),
             }),
         ];
-        if self.refreshing || self.scan.is_some() {
+        if self.refreshing || self.scan.is_some() || self.notice.is_some() {
             subs.push(
                 Subscription::new(Timer::new(
                     NonZeroU64::new(SPINNER_INTERVAL_MS).expect("non-zero"),
@@ -1076,6 +1137,47 @@ mod tests {
         );
     }
 
+    /// A notice must hand the footer back. Reported symptom: after pressing
+    /// `L` the key hints never returned — and the same was true of `p` and
+    /// `s`, because no notice had a deadline.
+    #[test]
+    fn notices_expire_and_give_the_footer_back() {
+        for msg in [
+            Message::ToggleLanguage,
+            Message::ToggleNoise,
+            Message::ToggleIdleOnly,
+        ] {
+            let mut a = app();
+            send(&mut a, msg.clone());
+            assert!(a.notice.is_some(), "{msg:?} should announce itself");
+            assert!(
+                a.notice_until.is_some(),
+                "{msg:?} set a notice with no deadline — it would never clear"
+            );
+
+            // The timer must be running, or nothing will ever deliver the Tick
+            // that clears it.
+            assert!(
+                a.subscriptions().len() > 1,
+                "{msg:?}: no timer subscribed, so the notice cannot expire"
+            );
+
+            // Once the deadline passes, the next tick restores the footer.
+            a.notice_until = Some(std::time::Instant::now());
+            send(&mut a, Message::Tick);
+            assert!(a.notice.is_none(), "{msg:?}: notice outlived its deadline");
+            assert!(a.notice_until.is_none());
+        }
+    }
+
+    /// An idle session must not subscribe to a timer — that is what keeps the
+    /// process asleep between keystrokes.
+    #[test]
+    fn idle_session_subscribes_to_input_only() {
+        let a = app();
+        assert_eq!(a.subscriptions().len(), 1);
+    }
+
     #[test]
     fn jump_messages_reach_both_ends() {
         let mut a = app();
@@ -1357,20 +1459,21 @@ mod render_tests {
         // Read from the theme rather than repeating the literal, so retuning
         // the palette does not silently invalidate the test.
         let band = app.theme.band;
-        // The band is inset by the outer margin, so it spans the content
-        // columns rather than the full frame — the margin cells stay base.
-        let inner = MARGIN_X..(buf.area.width - MARGIN_X);
+        // The band is inset by the outer margin and gives one further column
+        // to its shadow, so it spans neither the full frame nor the full
+        // content width.
+        let inner = MARGIN_X..(buf.area.width - MARGIN_X - 1);
         let band_rows: Vec<u16> = (0..buf.area.height)
             .filter(|&y| inner.clone().all(|x| buf[(x, y)].bg == band))
             .collect();
         assert_eq!(
             band_rows.len(),
-            5,
-            "expected 2 padding + 1 title + 2 padding fully filled rows, got {band_rows:?}"
+            3,
+            "expected 1 padding + 1 title + 1 padding fully filled rows, got {band_rows:?}"
         );
 
-        // The title sits on the middle row, in white.
-        let title_row = band_rows[2];
+        // The title sits on the middle row.
+        let title_row = band_rows[1];
         let text: String = (0..buf.area.width)
             .map(|x| buf[(x, title_row)].symbol())
             .collect();
@@ -1387,8 +1490,17 @@ mod render_tests {
             "the band foreground is white"
         );
         assert_eq!(app.theme.band, Color::Rgb(0x6E, 0x0D, 0x10), "deep red field");
+
+        // The card casts a shadow: the column just right of the band, one row
+        // down, carries the shadow colour rather than the substrate.
+        let shadow_x = buf.area.width - MARGIN_X - 1;
+        assert_eq!(
+            buf[(shadow_x, band_rows[1])].bg,
+            app.theme.shadow,
+            "the masthead must cast a shadow on its right edge"
+        );
         // Padding rows carry the field but no text.
-        for &y in [band_rows[0], band_rows[4]].iter() {
+        for &y in [band_rows[0], band_rows[2]].iter() {
             let row: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
             assert!(row.trim().is_empty(), "padding row {y} is not blank: {row:?}");
         }
