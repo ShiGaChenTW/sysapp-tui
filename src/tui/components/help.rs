@@ -18,6 +18,10 @@ use crate::tui::theme::Theme;
 /// const so the descriptions can be translated.
 fn bindings(lang: Lang) -> Vec<(Option<&'static str>, &'static str)> {
     let t = lang.strings();
+    let (star, recent) = match lang {
+        Lang::En => ("star/unstar; starred units stay on top", "cycle installs: all / 7 days / 30 days"),
+        Lang::ZhHant => ("設定／移除星號；星號項目固定置頂", "循環安裝日期：全部／近 7 天／近 30 天"),
+    };
     vec![
         (None, t.h_navigate),
         (Some("j / ↓"), t.h_down_one),
@@ -43,6 +47,8 @@ fn bindings(lang: Lang) -> Vec<(Option<&'static str>, &'static str)> {
         (Some("s"), t.h_toggle_idle),
         (Some("c"), t.h_cat_filter),
         (Some("C"), t.h_cat_set),
+        (Some("*"), star),
+        (Some("n"), recent),
         (None, t.h_data),
         (Some("r"), t.h_rescan),
         (None, t.h_session),

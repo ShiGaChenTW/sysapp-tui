@@ -1,6 +1,6 @@
 //! User-editable category overrides.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -12,6 +12,7 @@ use crate::model::{AppEntry, Category};
 pub struct UserConfig {
     overrides: HashMap<String, Category>,
     rules: Vec<Rule>,
+    starred: HashSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +27,8 @@ struct RawUserConfig {
     overrides: HashMap<String, String>,
     #[serde(default)]
     rules: Vec<RawRule>,
+    #[serde(default)]
+    starred: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -78,6 +81,16 @@ pub fn clear_override_in(path: &Path, name: &str) -> Result<()> {
     save_to(path, &config)
 }
 
+pub fn set_starred_in(path: &Path, name: &str, starred: bool) -> Result<()> {
+    let mut config = load_from(path).unwrap_or_default();
+    if starred {
+        config.starred.insert(name.to_owned());
+    } else {
+        config.starred.remove(name);
+    }
+    save_to(path, &config)
+}
+
 impl UserConfig {
     pub fn override_for(&self, name: &str) -> Option<Category> {
         self.overrides.get(name).cloned()
@@ -85,6 +98,10 @@ impl UserConfig {
 
     pub fn rule_for(&self, entry: &AppEntry) -> Option<Category> {
         self.rule_for_text(&entry.name, entry.description.as_deref())
+    }
+
+    pub fn starred_names(&self) -> HashSet<String> {
+        self.starred.clone()
     }
 }
 
@@ -136,7 +153,11 @@ impl UserConfig {
             })
             .collect();
 
-        Self { overrides, rules }
+        Self {
+            overrides,
+            rules,
+            starred: raw.starred.into_iter().collect(),
+        }
     }
 
     fn to_raw(&self) -> RawUserConfig {
@@ -154,7 +175,13 @@ impl UserConfig {
             })
             .collect();
 
-        RawUserConfig { overrides, rules }
+        let mut starred: Vec<String> = self.starred.iter().cloned().collect();
+        starred.sort_unstable();
+        RawUserConfig {
+            overrides,
+            rules,
+            starred,
+        }
     }
 
     fn rule_for_text(&self, name: &str, description: Option<&str>) -> Option<Category> {
@@ -175,13 +202,14 @@ impl UserConfig {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::fs::File;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        clear_override_in, load_from, path, save_to, set_override_in, Rule, UserConfig,
+        clear_override_in, load_from, path, save_to, set_override_in, set_starred_in, Rule,
+        UserConfig,
     };
     use crate::model::Category;
 
@@ -302,6 +330,16 @@ mod tests {
     }
 
     #[test]
+    fn starred_names_round_trip_and_can_be_removed() {
+        let scratch = Scratch::new("starred");
+        set_starred_in(scratch.path(), "ghostty", true).unwrap();
+        assert!(load_from(scratch.path()).unwrap().starred_names().contains("ghostty"));
+
+        set_starred_in(scratch.path(), "ghostty", false).unwrap();
+        assert!(!load_from(scratch.path()).unwrap().starred_names().contains("ghostty"));
+    }
+
+    #[test]
     fn save_load_round_trip_preserves_custom_categories() {
         let scratch = Scratch::new("round-trip");
         let config = UserConfig {
@@ -313,6 +351,7 @@ mod tests {
                 contains: "kubectl".to_owned(),
                 category: Category::Custom("DevOps".to_owned()),
             }],
+            starred: HashSet::new(),
         };
 
         save_to(scratch.path(), &config).unwrap();
@@ -424,6 +463,7 @@ mod tests {
                 contains: "kubectl".to_owned(),
                 category: Category::Custom("DevOps".to_owned()),
             }],
+            starred: HashSet::new(),
         };
 
         assert_eq!(
@@ -440,6 +480,7 @@ mod tests {
                 contains: "gh".to_owned(),
                 category: Category::Communication,
             }],
+            starred: HashSet::new(),
         };
 
         assert_eq!(
@@ -462,6 +503,7 @@ mod tests {
                     category: Category::Productivity,
                 },
             ],
+            starred: HashSet::new(),
         };
 
         assert_eq!(

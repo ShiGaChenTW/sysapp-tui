@@ -173,6 +173,10 @@ pub enum Message {
     ToggleNoise,
     /// Show only units with no evidence of use.
     ToggleIdleOnly,
+    /// Star/unstar the selected unit.
+    ToggleStar,
+    /// Cycle all units → installed in 7 days → installed in 30 days.
+    CycleRecentInstall,
     /// Switch between Traditional Chinese and English.
     ToggleLanguage,
     /// The background cache write failed; the data on screen is fine, only

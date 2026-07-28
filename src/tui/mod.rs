@@ -29,6 +29,7 @@ mod message;
 mod theme;
 
 use std::num::{NonZeroU32, NonZeroU64};
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
@@ -125,8 +126,30 @@ const RECORD_PANEL_WIDTH: u16 = 36;
 /// things worth uninstalling.
 const IDLE_MONTHS: i64 = 6;
 
-fn idle_cutoff() -> DateTime<Local> {
-    Local::now() - chrono::Duration::days(IDLE_MONTHS * 30)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum RecentInstall {
+    #[default]
+    All,
+    Days7,
+    Days30,
+}
+
+impl RecentInstall {
+    fn next(self) -> Self {
+        match self {
+            Self::All => Self::Days7,
+            Self::Days7 => Self::Days30,
+            Self::Days30 => Self::All,
+        }
+    }
+
+    fn days(self) -> Option<i64> {
+        match self {
+            Self::All => None,
+            Self::Days7 => Some(7),
+            Self::Days30 => Some(30),
+        }
+    }
 }
 
 pub struct App {
@@ -187,6 +210,8 @@ pub struct App {
     hide_noise: bool,
     /// Show only units with no evidence of use.
     idle_only: bool,
+    recent_install: RecentInstall,
+    starred: HashSet<String>,
     /// Cold-start scan progress. `None` once the inventory is ready.
     scan: Option<ScanProgress>,
     /// Per-source totals for the record panel. Recomputed only when the
@@ -250,6 +275,7 @@ pub struct ResumeState {
     sort_asc: bool,
     hide_noise: bool,
     idle_only: bool,
+    recent_install: RecentInstall,
     category_filter: Option<Category>,
     lang: Lang,
 }
@@ -340,17 +366,25 @@ impl App {
     /// name. Used after a background rescan: the list contents changed
     /// underneath the user, but the unit they were looking at should not move.
     fn rebuild_anchored(&mut self, anchor: Option<String>) {
-        let cutoff = idle_cutoff();
+        let now = Local::now();
+        let cutoff = now - chrono::Duration::days(IDLE_MONTHS * 30);
         let mut rows: Vec<usize> = self
             .entries
             .iter()
             .enumerate()
-            .filter(|(_, e)| self.visible(e, cutoff))
+            .filter(|(_, e)| self.visible(e, cutoff, now))
             .map(|(i, _)| i)
             .collect();
 
         let (col, asc) = (self.grid.sort_col, self.grid.sort_asc);
         rows.sort_by(|&a, &b| {
+            let star_order = self
+                .starred
+                .contains(&self.entries[b].name)
+                .cmp(&self.starred.contains(&self.entries[a].name));
+            if !star_order.is_eq() {
+                return star_order;
+            }
             let ord = table::compare(&self.entries[a], &self.entries[b], col);
             if asc { ord } else { ord.reverse() }
         });
@@ -419,6 +453,7 @@ impl App {
             sort_asc: self.grid.sort_asc,
             hide_noise: self.hide_noise,
             idle_only: self.idle_only,
+            recent_install: self.recent_install,
             category_filter: self.category_filter.clone(),
             lang: self.lang,
         }
@@ -435,6 +470,7 @@ impl App {
         self.grid.sort_asc = state.sort_asc;
         self.hide_noise = state.hide_noise;
         self.idle_only = state.idle_only;
+        self.recent_install = state.recent_install;
         self.category_filter = state.category_filter;
         self.lang = state.lang;
         state.cursor
@@ -465,11 +501,23 @@ impl App {
     /// once per entry per rebuild, so calling `Local::now()` inside would mean
     /// ~900 timezone resolutions per keystroke while filtering, and would make
     /// the filter time-dependent mid-pass.
-    fn visible(&self, e: &AppEntry, cutoff: DateTime<Local>) -> bool {
+    fn visible(
+        &self,
+        e: &AppEntry,
+        idle_cutoff: DateTime<Local>,
+        now: DateTime<Local>,
+    ) -> bool {
         if self.hide_noise && e.is_system_noise() {
             return false;
         }
-        if self.idle_only && !e.is_idle(cutoff) {
+        if self.idle_only && !e.is_idle(idle_cutoff) {
+            return false;
+        }
+        if let Some(days) = self.recent_install.days()
+            && e
+                .install_date
+                .is_none_or(|installed| installed < now - chrono::Duration::days(days))
+        {
             return false;
         }
         if let Some(wanted) = &self.category_filter
@@ -503,6 +551,15 @@ impl App {
         }
         if self.idle_only {
             spans.push(Span::styled(format!("   {}", t.idle_only), self.theme.accented()));
+        }
+        if let Some(days) = self.recent_install.days() {
+            spans.push(Span::styled(
+                match self.lang {
+                    Lang::En => format!("   INSTALLED ≤ {days}D"),
+                    Lang::ZhHant => format!("   近 {days} 天安裝"),
+                },
+                self.theme.accented(),
+            ));
         }
         if let Some(cat) = &self.category_filter {
             spans.push(Span::styled(
@@ -579,6 +636,8 @@ impl Application for App {
             notice_until: None,
             hide_noise: true,
             idle_only: false,
+            recent_install: RecentInstall::All,
+            starred: crate::config::load().starred_names(),
             scan: None,
             source_counts: Vec::new(),
             lang: Lang::detect(),
@@ -994,6 +1053,55 @@ impl Application for App {
                 });
                 self.rebuild();
             }
+            Message::ToggleStar => {
+                let Some(name) = self.selected_entry().map(|e| e.name.clone()) else {
+                    return Command::none();
+                };
+                let now_starred = if self.starred.contains(&name) {
+                    self.starred.remove(&name);
+                    false
+                } else {
+                    self.starred.insert(name.clone());
+                    true
+                };
+                let result = self
+                    .config_path
+                    .clone()
+                    .ok_or_else(|| anyhow!("platform has no home directory"))
+                    .and_then(|path| crate::config::set_starred_in(&path, &name, now_starred));
+                self.notify(if result.is_ok() {
+                    match (self.lang, now_starred) {
+                        (Lang::En, true) => "★ STARRED",
+                        (Lang::En, false) => "☆ STAR REMOVED",
+                        (Lang::ZhHant, true) => "★ 已設定星號",
+                        (Lang::ZhHant, false) => "☆ 已移除星號",
+                    }
+                } else {
+                    match self.lang {
+                        Lang::En => "STAR SAVE FAILED",
+                        Lang::ZhHant => "星號設定寫入失敗",
+                    }
+                });
+                self.rebuild_anchored(Some(name));
+            }
+            Message::CycleRecentInstall => {
+                self.recent_install = self.recent_install.next();
+                self.notify(match self.recent_install {
+                    RecentInstall::All => match self.lang {
+                        Lang::En => "SHOWING ALL INSTALL DATES",
+                        Lang::ZhHant => "顯示全部安裝日期",
+                    },
+                    RecentInstall::Days7 => match self.lang {
+                        Lang::En => "INSTALLED IN THE LAST 7 DAYS",
+                        Lang::ZhHant => "顯示近 7 天安裝",
+                    },
+                    RecentInstall::Days30 => match self.lang {
+                        Lang::En => "INSTALLED IN THE LAST 30 DAYS",
+                        Lang::ZhHant => "顯示近 30 天安裝",
+                    },
+                });
+                self.rebuild();
+            }
 
             Message::HelpToggle => {
                 if self.mode == Mode::Help {
@@ -1085,6 +1193,7 @@ impl Application for App {
             grid_area,
             &self.entries,
             &self.rows,
+            &self.starred,
             self.stats_line(),
             self.lang,
             &self.theme,
@@ -1327,6 +1436,34 @@ mod tests {
 
     fn names(a: &App) -> Vec<&str> {
         a.rows.iter().map(|&i| a.entries[i].name.as_str()).collect()
+    }
+
+    #[test]
+    fn starred_units_stay_above_the_active_sort() {
+        let mut a = app();
+        a.config_path = None;
+        a.grid.select(Some(2)); // charlie in name order
+        send(&mut a, Message::ToggleStar);
+        assert_eq!(names(&a), vec!["charlie", "alpha", "bravo"]);
+
+        send(&mut a, Message::SortBy(Column::Usage));
+        assert_eq!(names(&a), vec!["charlie", "alpha", "bravo"]);
+    }
+
+    #[test]
+    fn recent_install_filter_cycles_seven_thirty_all() {
+        let mut a = app();
+        let now = Local::now();
+        a.entries[0].install_date = Some(now - chrono::Duration::days(3));
+        a.entries[1].install_date = Some(now - chrono::Duration::days(14));
+        a.entries[2].install_date = Some(now - chrono::Duration::days(60));
+
+        send(&mut a, Message::CycleRecentInstall);
+        assert_eq!(names(&a), vec!["charlie"]);
+        send(&mut a, Message::CycleRecentInstall);
+        assert_eq!(names(&a), vec!["alpha", "charlie"]);
+        send(&mut a, Message::CycleRecentInstall);
+        assert_eq!(names(&a), vec!["alpha", "bravo", "charlie"]);
     }
 
     #[test]

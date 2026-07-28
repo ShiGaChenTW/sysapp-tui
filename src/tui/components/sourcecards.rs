@@ -15,11 +15,14 @@ use crate::tui::theme::Theme;
 
 use super::super::cast_shadow;
 
-const CARD_HEIGHT: u16 = 3;
+// The label is the card: no decorative blank row above or below it.
+const CARD_HEIGHT: u16 = 1;
 const SHADOW_DEPTH: u16 = 1;
 const GAP_X: u16 = 1;
 const GAP_Y: u16 = 1;
-const PAD_X: u16 = 1;
+// Two blank cells on both sides of every label. The extra breathing room keeps
+// dense source names and counts from reading as if they touch the card edges.
+const PAD_X: u16 = 2;
 const MIN_TOTAL_HEIGHT: u16 = CARD_HEIGHT + SHADOW_DEPTH;
 const HEIGHT_GATE: u16 = 20;
 
@@ -223,6 +226,21 @@ mod tests {
     fn fits_gates_short_viewports() {
         assert!(!fits(19));
         assert!(fits(20));
+    }
+
+    #[test]
+    fn cards_leave_two_blank_cells_around_the_label() {
+        // "BREW 323" is 8 cells, plus two cells at each end and the shadow
+        // column that layout reserves outside the painted card.
+        assert_eq!(card_width("BREW 323"), 13);
+        assert_eq!(overflow_width(4), 7);
+    }
+
+    #[test]
+    fn cards_have_no_blank_rows_around_the_label() {
+        assert_eq!(CARD_HEIGHT, 1);
+        assert_eq!(MIN_TOTAL_HEIGHT, 2, "one label row plus one shadow row");
+        assert_eq!(HEIGHT, 3, "card, shadow, and separator row");
     }
 
     #[test]

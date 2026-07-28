@@ -13,6 +13,7 @@ use ratatui::layout::{Constraint as C, Layout, Rect};
 use ratatui::widgets::{Block, BorderType, Borders, Cell, Padding, Paragraph, Row, Table, TableState};
 
 use unicode_width::UnicodeWidthStr;
+use std::collections::HashSet;
 
 use crate::model::AppEntry;
 use crate::tui::i18n::{self, Lang};
@@ -114,6 +115,7 @@ impl DataGrid {
         area: Rect,
         entries: &[AppEntry],
         rows: &[usize],
+        starred: &HashSet<String>,
         stats: Line<'_>,
         lang: Lang,
         theme: &Theme,
@@ -213,7 +215,7 @@ impl DataGrid {
 
         let body: Vec<Row> = rows
             .iter()
-            .map(|&i| self.row(&entries[i], columns, lang, theme))
+            .map(|&i| self.row(&entries[i], starred.contains(&entries[i].name), columns, lang, theme))
             .collect();
 
         let table = Table::new(body, widths)
@@ -226,7 +228,7 @@ impl DataGrid {
         frame.render_stateful_widget(table, grid, &mut state);
     }
 
-    fn row<'a>(&self, e: &'a AppEntry, columns: &[Column], lang: Lang, theme: &Theme) -> Row<'a> {
+    fn row<'a>(&self, e: &'a AppEntry, starred: bool, columns: &[Column], lang: Lang, theme: &Theme) -> Row<'a> {
         let install = e
             .install_date
             .map(|d| d.format("%Y-%m-%d").to_string())
@@ -265,7 +267,12 @@ impl DataGrid {
             columns
                 .iter()
                 .map(|col| match col {
-                    Column::Name => Cell::from(truncate(&e.name, 30)).style(theme.base()),
+                    Column::Name => Cell::from(format!(
+                        "{}{}",
+                        if starred { "★ " } else { "  " },
+                        truncate(&e.name, 28)
+                    ))
+                    .style(if starred { theme.accented() } else { theme.base() }),
                     Column::Source => {
                         Cell::from(truncate(&e.source.to_string().to_uppercase(), width(*col) as usize))
                             .style(theme.muted())

@@ -51,6 +51,8 @@ fn browse(key: KeyEvent) -> Option<Message> {
         KeyCode::Char('r') => Some(Message::RefreshStart),
         KeyCode::Char('p') => Some(Message::ToggleNoise),
         KeyCode::Char('s') => Some(Message::ToggleIdleOnly),
+        KeyCode::Char('*') => Some(Message::ToggleStar),
+        KeyCode::Char('n') => Some(Message::CycleRecentInstall),
         KeyCode::Char('L') => Some(Message::ToggleLanguage),
         KeyCode::Char('c') => Some(Message::CategoryFilterCycle),
         // Bare `Char('C')`, not `Char('c') + SHIFT`: crossterm already resolves
@@ -223,6 +225,18 @@ mod tests {
                 Some(Message::CategoryPush(got)) if got == ch
             ));
         }
+    }
+
+    #[test]
+    fn star_and_recent_install_keys_are_bound() {
+        assert!(matches!(
+            translate(Mode::Browse, press('*')),
+            Some(Message::ToggleStar)
+        ));
+        assert!(matches!(
+            translate(Mode::Browse, press('n')),
+            Some(Message::CycleRecentInstall)
+        ));
     }
 
     /// The confirmation is a focus trap: `y` is the only key that proceeds,
