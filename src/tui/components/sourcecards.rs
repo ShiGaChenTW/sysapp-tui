@@ -13,21 +13,16 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::tui::theme::Theme;
 
-use super::super::cast_shadow;
-
 // The label is the card: no decorative blank row above or below it.
 const CARD_HEIGHT: u16 = 1;
-const SHADOW_DEPTH: u16 = 1;
 const GAP_X: u16 = 1;
-const GAP_Y: u16 = 1;
 // Two blank cells on both sides of every label. The extra breathing room keeps
 // dense source names and counts from reading as if they touch the card edges.
 const PAD_X: u16 = 2;
-const MIN_TOTAL_HEIGHT: u16 = CARD_HEIGHT + SHADOW_DEPTH;
 const HEIGHT_GATE: u16 = 20;
 
-/// Card, shadow, and one blank separator row below it.
-pub const HEIGHT: u16 = CARD_HEIGHT + SHADOW_DEPTH + GAP_Y;
+/// A source card occupies exactly its single text row.
+pub const HEIGHT: u16 = CARD_HEIGHT;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CardKind<'a> {
@@ -47,23 +42,16 @@ pub struct SourceCards<'a> {
 
 impl SourceCards<'_> {
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        if area.width == 0 || area.height < MIN_TOTAL_HEIGHT {
+        if area.width == 0 || area.height < CARD_HEIGHT {
             return;
         }
 
         let row = Rect {
-            height: MIN_TOTAL_HEIGHT.min(area.height),
+            height: CARD_HEIGHT,
             ..area
         };
 
         for card in layout_cards(row, self.counts) {
-            let card_area = cast_shadow(frame, card.area, theme);
-            frame.render_widget(Paragraph::new("").style(theme.masthead()), card_area);
-            let text_row = Rect {
-                y: card_area.y + card_area.height.saturating_sub(1) / 2,
-                height: 1,
-                ..card_area
-            };
             let line = match card.kind {
                 CardKind::Source(name, count) => Line::from(vec![
                     Span::styled(name, theme.masthead()),
@@ -75,7 +63,7 @@ impl SourceCards<'_> {
             };
             frame.render_widget(
                 Paragraph::new(line).style(theme.masthead()).centered(),
-                text_row,
+                card.area,
             );
         }
     }
@@ -86,7 +74,7 @@ pub fn fits(area_height: u16) -> bool {
 }
 
 fn layout_cards<'a>(area: Rect, counts: &'a [(String, usize)]) -> Vec<CardLayout<'a>> {
-    if area.width == 0 || area.height < MIN_TOTAL_HEIGHT || counts.is_empty() {
+    if area.width == 0 || area.height < CARD_HEIGHT || counts.is_empty() {
         return Vec::new();
     }
 
@@ -124,7 +112,7 @@ fn build_source_layout<'a>(
                 x,
                 y: area.y,
                 width: *width,
-                height: MIN_TOTAL_HEIGHT,
+                height: CARD_HEIGHT,
             },
             kind: CardKind::Source(name.as_str(), *count),
         });
@@ -150,7 +138,7 @@ fn build_with_overflow<'a>(
             x,
             y: area.y,
             width: overflow_width(omitted),
-            height: MIN_TOTAL_HEIGHT,
+            height: CARD_HEIGHT,
         },
         kind: CardKind::Overflow(omitted),
     });
@@ -194,9 +182,7 @@ fn overflow_width(omitted: usize) -> u16 {
 
 fn card_width(text: &str) -> u16 {
     let text_width: u16 = text.width().try_into().unwrap_or(u16::MAX);
-    text_width
-        .saturating_add(PAD_X * 2)
-        .saturating_add(SHADOW_DEPTH)
+    text_width.saturating_add(PAD_X * 2)
 }
 
 #[cfg(test)]
@@ -208,7 +194,7 @@ mod tests {
             x: 4,
             y: 2,
             width,
-            height: MIN_TOTAL_HEIGHT,
+            height: CARD_HEIGHT,
         }
     }
 
@@ -230,17 +216,15 @@ mod tests {
 
     #[test]
     fn cards_leave_two_blank_cells_around_the_label() {
-        // "BREW 323" is 8 cells, plus two cells at each end and the shadow
-        // column that layout reserves outside the painted card.
-        assert_eq!(card_width("BREW 323"), 13);
-        assert_eq!(overflow_width(4), 7);
+        // "BREW 323" is 8 cells, plus two cells at each end.
+        assert_eq!(card_width("BREW 323"), 12);
+        assert_eq!(overflow_width(4), 6);
     }
 
     #[test]
     fn cards_have_no_blank_rows_around_the_label() {
         assert_eq!(CARD_HEIGHT, 1);
-        assert_eq!(MIN_TOTAL_HEIGHT, 2, "one label row plus one shadow row");
-        assert_eq!(HEIGHT, 3, "card, shadow, and separator row");
+        assert_eq!(HEIGHT, 1, "the component is exactly one text row");
     }
 
     #[test]
